@@ -1,0 +1,368 @@
+const fp = require('fastify-plugin');
+const { normalizeAddressList } = require('../utils/address');
+const { stripHtml } = require('../utils/condition');
+const { createError } = require('../utils/error');
+
+const SUMMARY_LENGTH = 120;
+
+module.exports = fp(async (fastify, options) => {
+  const { models, services } = fastify[options.name];
+  const { Op } = fastify.sequelize.Sequelize;
+  const sequelize = fastify.sequelize.instance;
+
+  const likeOp = () => (sequelize.getDialect() === 'postgres' ? Op.iLike : Op.like);
+
+  const labelInclude = () => ({ model: models.label, as: 'labels', attributes: ['id', 'name', 'color'], through: { attributes: [] } });
+
+  const toListItem = mail => {
+    const plain = mail.get({ plain: true });
+    const summary = (plain.text || stripHtml(plain.html)).replace(/\s+/g, ' ').trim().slice(0, SUMMARY_LENGTH);
+    delete plain.text;
+    delete plain.html;
+    return Object.assign(plain, { summary });
+  };
+
+  const getMailIdsByLabel = async labelId => {
+    const rows = await models.mailLabel.findAll({ where: { labelId }, attributes: ['mailId'], raw: true });
+    return rows.map(item => item.mailId);
+  };
+
+  const list = async ({ filter = {}, perPage = 20, currentPage = 1 } = {}) => {
+    const where = { folder: filter.folder || 'inbox' };
+    if (filter.accountId) {
+      where.accountId = filter.accountId;
+    }
+    if (filter.isRead != null && filter.isRead !== '') {
+      where.isRead = filter.isRead === true || filter.isRead === 'true';
+    }
+    if (filter.isStarred != null && filter.isStarred !== '') {
+      where.isStarred = filter.isStarred === true || filter.isStarred === 'true';
+    }
+    if (filter.keyword) {
+      const op = likeOp();
+      where[Op.or] = [{ subject: { [op]: `%${filter.keyword}%` } }, { text: { [op]: `%${filter.keyword}%` } }];
+    }
+    if (filter.labelId) {
+      where.id = { [Op.in]: await getMailIdsByLabel(filter.labelId) };
+    }
+    const { rows, count } = await models.mail.findAndCountAll({
+      where,
+      attributes: { exclude: ['headers', 'references'] },
+      include: [labelInclude()],
+      distinct: true,
+      offset: perPage * (currentPage - 1),
+      limit: perPage,
+      order: [
+        ['date', 'DESC'],
+        ['createdAt', 'DESC']
+      ]
+    });
+    return { pageData: rows.map(toListItem), totalCount: count };
+  };
+
+  const getInstance = async ({ id }) => {
+    const mail = await models.mail.findByPk(id, { include: [labelInclude()] });
+    if (!mail) {
+      throw createError('邮件不存在', 404);
+    }
+    return mail;
+  };
+
+  const detail = async ({ id, markRead = true }) => {
+    const mail = await getInstance({ id });
+    if (markRead && !mail.isRead) {
+      mail.isRead = true;
+      await mail.save();
+    }
+    return mail;
+  };
+
+  const setRead = async ({ ids, isRead = true }) => {
+    await models.mail.update({ isRead }, { where: { id: ids } });
+  };
+
+  const setStar = async ({ ids, isStarred = true }) => {
+    await models.mail.update({ isStarred }, { where: { id: ids } });
+  };
+
+  const addLabels = async ({ id, labelIds }) => {
+    const exists = (await models.mailLabel.findAll({ where: { mailId: id }, attributes: ['labelId'], raw: true })).map(item => String(item.labelId));
+    const target = (labelIds || []).map(String).filter(labelId => !exists.includes(labelId));
+    if (target.length > 0) {
+      await models.mailLabel.bulkCreate(target.map(labelId => ({ mailId: id, labelId })));
+    }
+  };
+
+  const removeLabels = async ({ id, labelIds }) => {
+    await models.mailLabel.destroy({ where: { mailId: id, labelId: labelIds } });
+  };
+
+  const setLabels = async ({ id, labelIds = [] }) => {
+    await getInstance({ id });
+    await models.mailLabel.destroy({ where: { mailId: id } });
+    await addLabels({ id, labelIds });
+    return await getInstance({ id });
+  };
+
+  const moveToTrash = async ({ ids }) => {
+    const mails = await models.mail.findAll({ where: { id: ids, folder: { [Op.ne]: 'trash' } } });
+    for (const mail of mails) {
+      mail.originFolder = mail.folder;
+      mail.folder = 'trash';
+      await mail.save();
+    }
+  };
+
+  const restore = async ({ ids }) => {
+    const mails = await models.mail.findAll({ where: { id: ids, folder: 'trash' } });
+    for (const mail of mails) {
+      mail.folder = mail.originFolder || 'inbox';
+      mail.originFolder = null;
+      await mail.save();
+    }
+  };
+
+  const remove = async ({ ids }) => {
+    await models.mailLabel.destroy({ where: { mailId: ids } });
+    await models.mail.destroy({ where: { id: ids } });
+  };
+
+  /**
+   * 文件夹与标签的计数，供前端侧栏显示：标签只统计收件箱中的邮件
+   */
+  const folderStats = async ({ accountId } = {}) => {
+    const base = accountId ? { accountId } : {};
+    const [inboxTotal, inboxUnread, sent, draft, trash] = await Promise.all([
+      models.mail.count({ where: Object.assign({ folder: 'inbox' }, base) }),
+      models.mail.count({ where: Object.assign({ folder: 'inbox', isRead: false }, base) }),
+      models.mail.count({ where: Object.assign({ folder: 'sent' }, base) }),
+      models.mail.count({ where: Object.assign({ folder: 'draft' }, base) }),
+      models.mail.count({ where: Object.assign({ folder: 'trash' }, base) })
+    ]);
+    const labels = await services.label.list({ accountId });
+    const labelStats = await Promise.all(
+      labels.map(async label => {
+        const include = [{ model: models.mailLabel, as: 'mailLabels', where: { labelId: label.id }, attributes: [], required: true }];
+        const [total, unread] = await Promise.all([
+          models.mail.count({ where: Object.assign({ folder: 'inbox' }, base), include, distinct: true }),
+          models.mail.count({ where: Object.assign({ folder: 'inbox', isRead: false }, base), include, distinct: true })
+        ]);
+        return { id: label.id, name: label.name, color: label.color, total, unread };
+      })
+    );
+    return {
+      folders: {
+        inbox: { total: inboxTotal, unread: inboxUnread },
+        sent: { total: sent },
+        draft: { total: draft },
+        trash: { total: trash }
+      },
+      labels: labelStats
+    };
+  };
+
+  const isAttachmentReady = attachment => !!(attachment && (attachment.id || attachment.url));
+
+  const findSourceAttachment = (list, target, index) => {
+    const sameFile = item => (item.filename || 'attachment') === target.filename && (target.size == null || item.size === target.size);
+    const matches = item => !!item && (target.checksum ? item.checksum === target.checksum : sameFile(item));
+    return matches(list[index]) ? list[index] : list.find(matches);
+  };
+
+  const pendingDownloads = new Map();
+
+  /**
+   * 收信附件按需下载：首次调用时从 IMAP 取回原邮件、上传到文件存储并记录文件 id，之后直接返回已保存的附件
+   */
+  const downloadAttachment = async ({ id, index }) => {
+    const key = `${id}:${index}`;
+    if (pendingDownloads.has(key)) {
+      return await pendingDownloads.get(key);
+    }
+    const task = (async () => {
+      const mail = await models.mail.findByPk(id);
+      if (!mail) {
+        throw createError('邮件不存在', 404);
+      }
+      const attachment = (mail.attachments || [])[index];
+      if (!attachment) {
+        throw createError('附件不存在', 404);
+      }
+      if (isAttachmentReady(attachment)) {
+        return attachment;
+      }
+      if (mail.uid == null) {
+        throw createError(`附件无法下载: ${attachment.filename}`);
+      }
+      if (typeof options.uploadAttachment !== 'function') {
+        throw createError('未配置附件存储 options.uploadAttachment');
+      }
+      const account = await services.account.getWithPassword({ id: mail.accountId });
+      const parsed = await services.sync.fetchMessage({ account, uid: mail.uid, messageId: mail.messageId });
+      const source = findSourceAttachment(parsed.attachments || [], attachment, index);
+      if (!source) {
+        throw createError(`邮件服务器上找不到附件: ${attachment.filename}`, 404);
+      }
+      const uploaded = await options.uploadAttachment({ filename: attachment.filename, contentType: attachment.contentType, content: source.content });
+      if (!uploaded || !uploaded.id) {
+        throw createError(`附件保存失败: ${attachment.filename}`);
+      }
+      // 重新读取再写入，避免覆盖同一封邮件其它附件并发下载的结果
+      const latest = await models.mail.findByPk(id);
+      const attachments = [...(latest.attachments || [])];
+      attachments[index] = Object.assign({}, attachments[index], { id: uploaded.id, error: undefined });
+      latest.attachments = attachments;
+      latest.changed('attachments', true);
+      await latest.save();
+      return attachments[index];
+    })();
+    pendingDownloads.set(key, task);
+    try {
+      return await task;
+    } finally {
+      pendingDownloads.delete(key);
+    }
+  };
+
+  // 转发 / 回复时引用的收信附件可能还没下载过：传 { mailId, index } 的附件先下载再发送
+  const prepareAttachments = async attachments => {
+    const result = [];
+    for (const attachment of attachments || []) {
+      if (!isAttachmentReady(attachment) && attachment.mailId != null && attachment.index != null) {
+        result.push(await downloadAttachment({ id: attachment.mailId, index: Number(attachment.index) }));
+      } else {
+        result.push(attachment);
+      }
+    }
+    return result;
+  };
+
+  const resolveAttachments = async attachments => {
+    const result = [];
+    for (const attachment of attachments || []) {
+      const resolved = typeof options.resolveAttachment === 'function' ? await options.resolveAttachment(attachment) : null;
+      if (!resolved) {
+        throw createError(`附件无法读取: ${attachment.filename || attachment.id}`);
+      }
+      result.push(resolved);
+    }
+    return result;
+  };
+
+  const buildReferences = (references, inReplyTo) => {
+    const list = [].concat(references || []).filter(Boolean);
+    if (inReplyTo && !list.includes(inReplyTo)) {
+      list.push(inReplyTo);
+    }
+    return list.length > 0 ? list : null;
+  };
+
+  /**
+   * 发送邮件：beforeSend 钩子 → SMTP 发送 → 存入已发送 → 发信规则 → afterSend 钩子
+   * 传 draftId 时把草稿转为已发送；skipRules 用于自动回复/转发等规则内发信，避免规则循环触发
+   */
+  const send = async ({ accountId, to, cc, bcc, subject, html, text, attachments = [], inReplyTo, references, headers, draftId, skipRules = false }) => {
+    const account = await services.account.getWithPassword({ id: accountId });
+    if (account.status !== 'enabled') {
+      throw createError('邮箱账号已停用，无法发送邮件');
+    }
+    const toList = normalizeAddressList(to);
+    if (toList.length === 0) {
+      throw createError('收件人不能为空');
+    }
+    const ccList = normalizeAddressList(cc);
+    const bccList = normalizeAddressList(bcc);
+    const referenceList = buildReferences(references, inReplyTo);
+    attachments = await prepareAttachments(attachments);
+    let mailOptions = {
+      from: { name: account.name, address: account.address },
+      to: toList,
+      cc: ccList,
+      bcc: bccList,
+      subject: subject || '',
+      html: html || undefined,
+      text: text || (html ? stripHtml(html).replace(/\s+/g, ' ').trim() : ''),
+      attachments: await resolveAttachments(attachments),
+      inReplyTo: inReplyTo || undefined,
+      references: referenceList || undefined,
+      headers: headers || undefined
+    };
+
+    if (typeof options.beforeSend === 'function') {
+      const result = await options.beforeSend({ mailOptions, account, fastify });
+      if (result === false) {
+        throw createError('邮件发送被 beforeSend 拦截');
+      }
+      if (result && typeof result === 'object') {
+        mailOptions = result;
+      }
+    }
+
+    const transport = services.account.createTransport(services.account.toConnectionConfig(account));
+    let info;
+    try {
+      info = await transport.sendMail(mailOptions);
+    } finally {
+      transport.close && transport.close();
+    }
+
+    const record = {
+      accountId,
+      folder: 'sent',
+      isRead: true,
+      messageId: (info && info.messageId) || null,
+      inReplyTo: inReplyTo || null,
+      references: referenceList,
+      from: [{ name: account.name, address: account.address }],
+      to: normalizeAddressList(mailOptions.to),
+      cc: normalizeAddressList(mailOptions.cc),
+      bcc: normalizeAddressList(mailOptions.bcc),
+      subject: mailOptions.subject,
+      html: mailOptions.html || '',
+      text: mailOptions.text || '',
+      date: new Date(),
+      attachments: (attachments || []).map(({ id, filename, contentType, size, url }) => ({ id, filename, contentType, size, url })),
+      headers: Object.fromEntries(Object.entries(headers || {}).map(([key, value]) => [key.toLowerCase(), String(value)]))
+    };
+
+    let mail;
+    const draft = draftId ? await models.mail.findOne({ where: { id: draftId, folder: 'draft' } }) : null;
+    if (draft) {
+      await draft.update(record);
+      mail = draft;
+    } else {
+      mail = await models.mail.create(record);
+    }
+
+    if (!skipRules) {
+      await services.pipeline.dispatch({ direction: 'send', mail, account });
+    }
+
+    if (typeof options.afterSend === 'function') {
+      try {
+        await options.afterSend({ mail, info, account, fastify });
+      } catch (e) {
+        fastify.log.error(e, '[fastify-mail-gateway] afterSend 执行失败');
+      }
+    }
+
+    return mail;
+  };
+
+  services.mail = {
+    list,
+    detail,
+    getInstance,
+    setRead,
+    setStar,
+    addLabels,
+    removeLabels,
+    setLabels,
+    moveToTrash,
+    restore,
+    remove,
+    folderStats,
+    downloadAttachment,
+    send
+  };
+});

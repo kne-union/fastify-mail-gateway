@@ -1,0 +1,76 @@
+{
+  "name": "@kne/fastify-mail-gateway",
+  "version": "0.1.0",
+  "description": "邮件网关 Fastify 插件：托管 IMAP/SMTP 邮箱，收取、发送和管理邮件，支持标签、草稿，以及可动态配置的收发规则中间件（打标签、自动回复、转发、webhook、自定义动作）",
+  "main": "index.js",
+  "scripts": {
+    "init": "husky",
+    "build:md": "npx @kne/md-doc",
+    "start:md": "npx @kne/md-doc --watch",
+    "init-prompts": "npx @kne/npm-tools deployPrompts fastify-libs",
+    "prettier": "prettier --config .prettierrc --write '{libs/**/*,index}.{js,jsx,ts,tsx,json,css,scss}'",
+    "lint-staged": "npx lint-staged",
+    "test": "mocha --exit 'test/**/*.test.js'",
+    "test:coverage": "nyc --reporter=html --reporter=text mocha --exit 'test/**/*.test.js'"
+  },
+  "lint-staged": {
+    "**/*.md": [
+      "git add"
+    ],
+    "{libs/**/*,index}.{js,jsx,ts,tsx,json,css,scss}": [
+      "prettier --config .prettierrc --write",
+      "git add"
+    ]
+  },
+  "files": [
+    "index.js",
+    "libs"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/kne-union/fastify-mail-gateway.git"
+  },
+  "keywords": [
+    "fastify",
+    "fastify-plugin",
+    "mail",
+    "email",
+    "imap",
+    "smtp",
+    "mail-gateway",
+    "inbox",
+    "auto-reply",
+    "mail-rules"
+  ],
+  "author": "linzp",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/kne-union/fastify-mail-gateway/issues"
+  },
+  "homepage": "https://github.com/kne-union/fastify-mail-gateway#readme",
+  "peerDependencies": {
+    "@kne/fastify-namespace": "*",
+    "@kne/fastify-sequelize": "*",
+    "fastify-plugin": ">=5"
+  },
+  "dependencies": {
+    "fastify-cron": "^1.4.0",
+    "imapflow": "^2.4.2",
+    "lodash": "^4.18.1",
+    "mailparser": "^3.9.39",
+    "nodemailer": "^10.1.1"
+  },
+  "devDependencies": {
+    "@kne/fastify-namespace": "^1.2.1",
+    "@kne/fastify-sequelize": "^4.0.5",
+    "chai": "^6.3.0",
+    "fastify": "^5.12.7",
+    "fastify-plugin": "^5.1.0",
+    "husky": "^9.1.7",
+    "mocha": "^11.8.0",
+    "nyc": "^17.1.0",
+    "prettier": "^3.9.10",
+    "qs": "^6.16.1",
+    "sqlite3": "^6.0.1"
+  }
+}
