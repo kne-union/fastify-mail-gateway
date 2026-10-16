@@ -48,7 +48,8 @@ module.exports = fp(async (fastify, options) => {
   };
 
   /**
-   * 对一封邮件执行指定方向的规则：按优先级依次求值，命中则顺序执行动作并写日志，stopProcessing 时中断
+   * 对一封邮件执行指定方向的规则：按优先级依次求值，命中则执行动作并写日志；
+   * 短路：任一规则命中后不再求值/执行后续规则（stopProcessing 恒生效，字段保留兼容旧数据）
    */
   const run = async ({ direction, mail, account }) => {
     const plainMail = toPlainMail(mail);
@@ -61,9 +62,7 @@ module.exports = fp(async (fastify, options) => {
         continue;
       }
       executed.push(await executeRule({ rule, mail: plainMail, account: publicAccount, direction }));
-      if (rule.stopProcessing) {
-        break;
-      }
+      break;
     }
     return executed;
   };
@@ -87,5 +86,5 @@ module.exports = fp(async (fastify, options) => {
     }
   };
 
-  services.pipeline = { run, dispatch };
+  services.pipeline = { run, dispatch, executeRule };
 });

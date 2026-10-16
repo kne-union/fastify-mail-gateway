@@ -178,8 +178,13 @@ module.exports = fp(async (fastify, options) => {
     const details = new Array(items.length);
     const isDecided = matched => (match === 'any' ? matched : !matched);
     let decided = false;
+    // 先求值内置条件（按配置顺序，已决定则短路跳过后续内置项）
     items.forEach((item, index) => {
       if (isExtensionItem(item)) {
+        return;
+      }
+      if (decided) {
+        details[index] = { field: item.field, operator: item.operator, value: item.value, matched: false, skipped: true };
         return;
       }
       const matched = evaluateItem(mail, item);
@@ -188,6 +193,7 @@ module.exports = fp(async (fastify, options) => {
         decided = true;
       }
     });
+    // 扩展条件按配置顺序求值；all 已未命中 / any 已命中时跳过，避免多余外部调用
     for (let index = 0; index < items.length; index++) {
       const item = items[index];
       if (!isExtensionItem(item)) {

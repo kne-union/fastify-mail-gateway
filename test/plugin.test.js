@@ -161,7 +161,40 @@ describe('@kne/fastify-mail-gateway', function () {
 
       const stored = await fastify.mailGateway.models.account.findByPk(account.id);
       expect(stored.syncState.lastUid).to.equal(5);
+      expect(stored.syncState.oldestUid).to.equal(2);
       expect(stored.lastError).to.equal(null);
+    });
+
+    it('should fetch history mails asynchronously in batches with limit', async () => {
+      const { imap } = fastify.testContext;
+      const account = await createAccount();
+      for (let i = 1; i <= 5; i++) {
+        await imap.addMessage({ subject: `h${i}`, messageId: `<h${i}@x>` });
+      }
+      // 首次同步只拿最新 2 封 h4/h5，h1-h3 留作历史
+      await inject('POST', `/accounts/${account.id}/sync`);
+      let list = await inject('GET', `/mails?filter[accountId]=${account.id}`);
+      expect(list.totalCount).to.equal(2);
+
+      const started = await inject('POST', `/accounts/${account.id}/sync-history`, { limit: 2 });
+      expect(started.started).to.equal(true);
+      expect(started.history).to.include({ status: 'running', limit: 2, fetched: 0 });
+      await fastify.mailGateway.services.sync.awaitHistorySync(account.id);
+
+      list = await inject('GET', `/mails?filter[accountId]=${account.id}`);
+      expect(list.totalCount).to.equal(4);
+      expect(list.pageData.map(item => item.subject).sort()).to.deep.equal(['h2', 'h3', 'h4', 'h5']);
+      const afterLimit = await fastify.mailGateway.models.account.findByPk(account.id);
+      expect(afterLimit.syncState.history).to.include({ status: 'done', limit: 2, fetched: 2 });
+
+      const rest = await inject('POST', `/accounts/${account.id}/sync-history`, {});
+      expect(rest.started).to.equal(true);
+      await fastify.mailGateway.services.sync.awaitHistorySync(account.id);
+      list = await inject('GET', `/mails?filter[accountId]=${account.id}`);
+      expect(list.totalCount).to.equal(5);
+      const done = await fastify.mailGateway.models.account.findByPk(account.id);
+      expect(done.syncState.history.status).to.equal('done');
+      expect(done.syncState.oldestUid).to.equal(1);
     });
 
     it('should download attachments on demand and reuse the stored file', async () => {
@@ -395,13 +428,14 @@ describe('@kne/fastify-mail-gateway', function () {
       }
     });
 
-    it('should label matched mails, honor priority and stopProcessing, and write logs', async () => {
+    it('should label matched mails, honor priority, short-circuit after first match, and write logs', async () => {
       const label = await inject('POST', '/labels', { name: '发票' });
       await inject('POST', '/rules', {
         name: '发票归档',
         direction: 'receive',
         priority: 1,
-        stopProcessing: true,
+        // 即使显式关闭 stopProcessing，流水线仍短路：命中后不再跑后续规则
+        stopProcessing: false,
         conditions: { match: 'any', items: [{ field: 'subject', operator: 'contains', value: '发票' }] },
         actions: [{ type: 'addLabel', params: { labelIds: [label.id] } }, { type: 'markRead' }, { type: 'collect', params: { tag: 'invoice' } }]
       });
@@ -622,6 +656,33 @@ describe('@kne/fastify-mail-gateway', function () {
       const adhoc = await inject('POST', '/rules/test', { mailId: mail.id, conditions: { items: [{ field: 'subject', operator: 'contains', value: '不存在' }] } });
       expect(adhoc.matched).to.equal(false);
       expect(calls).to.have.length(0);
+    });
+
+    it('should execute rule actions manually only when matched', async () => {
+      const mail = await receive({ subject: '手动执行', messageId: '<e@x>' });
+      const rule = await inject('POST', '/rules', {
+        name: '手动执行',
+        direction: 'receive',
+        status: 'disabled',
+        conditions: { items: [{ field: 'subject', operator: 'contains', value: '手动' }] },
+        actions: [{ type: 'collect', params: { tag: 'manual' } }]
+      });
+      const result = await inject('POST', `/rules/${rule.id}/execute`, { mailId: mail.id });
+      expect(result).to.include({ matched: true, executed: true });
+      expect(result.execution.status).to.equal('success');
+      expect(calls).to.have.length(1);
+      const logs = await inject('GET', '/rule-logs');
+      expect(logs.pageData.filter(item => item.ruleId === rule.id)).to.have.length(1);
+
+      const other = await inject('POST', '/rules', {
+        name: '不命中',
+        direction: 'receive',
+        conditions: { items: [{ field: 'subject', operator: 'contains', value: '不存在' }] },
+        actions: [{ type: 'collect', params: { tag: 'never' } }]
+      });
+      const skipped = await inject('POST', `/rules/${other.id}/execute`, { mailId: mail.id });
+      expect(skipped).to.include({ matched: false, executed: false });
+      expect(calls).to.have.length(1);
     });
 
     it('should support rule status, sort, update and remove', async () => {
@@ -856,6 +917,33 @@ describe('@kne/fastify-mail-gateway', function () {
 
       const invalid = await inject('POST', '/contacts', { address: 'not-an-email' }).catch(e => e);
       expect(invalid.statusCode).to.equal(400);
+    });
+  });
+
+  describe('系统默认标签', () => {
+    beforeEach(async () => {
+      fastify = await createFastify();
+      await fastify.mailGateway.services.label.includeDefaultLabels([
+        { code: 'important', name: '重要', color: '#f5222d' },
+        { code: 'todo', name: '待办', color: '#fa8c16' }
+      ]);
+    });
+
+    it('should upsert system labels by code and lock edit/delete', async () => {
+      const list = await inject('GET', '/labels');
+      expect(list.map(item => [item.code, item.name, item.level, item.color])).to.deep.equal([
+        ['important', '重要', 0, '#f5222d'],
+        ['todo', '待办', 0, '#fa8c16']
+      ]);
+
+      await fastify.mailGateway.services.label.includeDefaultLabels([{ code: 'important', name: '重要事项', color: '#cf1322' }]);
+      const updated = (await inject('GET', '/labels')).find(item => item.code === 'important');
+      expect(updated).to.include({ name: '重要事项', color: '#cf1322', level: 0 });
+
+      const saveError = await inject('PUT', `/labels/${updated.id}`, { name: '改名' }).catch(e => e);
+      expect(saveError.statusCode).to.equal(403);
+      const removeError = await inject('DELETE', `/labels/${updated.id}`).catch(e => e);
+      expect(removeError.statusCode).to.equal(403);
     });
   });
 });

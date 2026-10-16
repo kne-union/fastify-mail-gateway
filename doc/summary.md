@@ -24,7 +24,7 @@
 规则管道
   按 priority 加载启用规则 → 过滤适用邮箱 → 条件求值
         ↓（命中）
-  按顺序执行动作（单个动作失败不影响其他动作）→ 写 ruleLog → stopProcessing 时中断
+  按顺序执行动作（单个动作失败不影响其他动作）→ 写 ruleLog → 命中后短路，不再执行后续规则
 ```
 
 | 节点 | 说明 |
@@ -34,6 +34,7 @@
 | 动作注册表 | 内置动作 + `options.actions` + 运行时 `services.action.register` |
 | 条件注册表 | 内置字段条件 + `options.conditions` + 运行时 `services.condition.register` 注册的扩展条件 |
 | 系统默认模版 | 配置 `templateDir` 时，数据库同步完成后按 `code` 载入 / 覆盖系统默认分类与模版 |
+| 系统默认标签 | 配置 `defaultLabels` 时，数据库同步完成后按 `code` 载入 / 覆盖系统默认全局标签（不可修改、删除） |
 | 规则日志 | 只记录命中的规则，包含每个动作的结果、错误和耗时 |
 
 ### 核心概念详解
@@ -49,7 +50,7 @@
 | conditions | `{ match: 'all' \| 'any', items: [...] }`，item 为内置条件 `{ field, operator, value }` 或扩展条件 `{ type, params }`，items 为空表示总是命中 |
 | actions | `[{ type, params }]`，按顺序执行 |
 | priority | 越小越先执行 |
-| stopProcessing | 命中后不再执行后续规则 |
+| stopProcessing | 命中后不再执行后续规则（流水线已固定短路，默认 true） |
 
 条件字段：`from`、`to`、`cc`、`subject`、`text`、`hasAttachment`、`accountId`；操作符：`contains`、`notContains`、`equals`、`startsWith`、`endsWith`、`regex`。字符串比较均不区分大小写，地址类字段的 `equals` 会逐个地址精确匹配。
 
@@ -89,7 +90,7 @@
 | 特性 | 说明 |
 |------|------|
 | 邮箱托管 | 添加时校验 IMAP/SMTP 连通性；密码 AES-256-GCM 加密存储，接口永不返回 |
-| 增量同步 | cron 定时同步所有启用邮箱，也可手动立即同步；并发保护，同一邮箱不会同时同步 |
+| 增量同步 | cron 定时同步所有启用邮箱，也可手动立即同步；历史邮件用 sync-history 异步分批拉取；并发保护，同一邮箱不会同时同步 |
 | 邮件管理 | 收件箱 / 已发送 / 草稿 / 回收站，已读、星标、标签、回收站恢复、彻底删除 |
 | 标签文件夹 | 邮箱专属标签 + 全局标签，提供各文件夹和标签的总数 / 未读数 |
 | 草稿 | 保存、更新、发送草稿，发送后草稿转为已发送 |

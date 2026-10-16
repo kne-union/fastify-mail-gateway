@@ -14,6 +14,8 @@ module.exports = fp(
         inboxPath: 'INBOX',
         secretKey: null,
         templateDir: null,
+        /** 系统默认全局标签 [{ code, name, color, sort? }]，启动时按 code 载入 / 覆盖 */
+        defaultLabels: null,
         actions: {},
         conditions: {},
         onReceive: null,
@@ -100,6 +102,12 @@ module.exports = fp(
 
         if (options.templateDir) {
           fastify.sequelize.syncPromise.then(() => services.template.includeTemplate(options.templateDir)).catch(e => fastify.log.error(e, '[fastify-mail-gateway] 载入系统默认邮件模版失败'));
+        }
+
+        if (Array.isArray(options.defaultLabels) && options.defaultLabels.length > 0) {
+          fastify.sequelize.syncPromise
+            .then(() => services.label.includeDefaultLabels(options.defaultLabels))
+            .catch(e => fastify.log.error(e, '[fastify-mail-gateway] 载入系统默认标签失败'));
         }
 
         if (options.syncCronTime) {

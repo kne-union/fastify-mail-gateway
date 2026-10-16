@@ -37,7 +37,7 @@ module.exports = ({ DataTypes, options }) => {
       syncState: {
         type: DataTypes.JSON,
         defaultValue: {},
-        comment: '同步游标 { uidValidity, lastUid }'
+        comment: '同步游标 { uidValidity, lastUid, oldestUid, history: { status, limit, fetched, startedAt, finishedAt, error } }'
       },
       lastSyncAt: {
         type: DataTypes.DATE,

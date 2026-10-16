@@ -27,11 +27,11 @@
 | type | 涉及接口 |
 |------|------|
 | `account` | 邮箱账号列表、详情 |
-| `account:manage` | 添加、修改、删除、启停、测试连接、立即同步 |
+| `account:manage` | 添加、修改、删除、启停、测试连接、立即同步、拉取历史邮件 |
 | `mail` | 邮件列表、详情、计数、已读、星标、标签、回收站、删除 |
 | `mail:send` | 发送邮件、草稿 |
 | `label` / `label:manage` | 标签列表 / 标签增删改、排序 |
-| `rule` / `rule:manage` | 规则列表、详情、试运行、日志、动作列表 / 规则增删改、启停、排序 |
+| `rule` / `rule:manage` | 规则列表、详情、试运行、日志、动作列表 / 规则增删改、启停、排序、手动执行 |
 | `template` / `template:manage` | 模版分类与模版列表、详情、渲染 / 分类与模版增删改、排序、启停、复制 |
 | `contact` / `contact:manage` | 联系人列表 / 联系人增删改 |
 
@@ -52,7 +52,8 @@
 | `DELETE /accounts/{id}` | 删除账号及其邮件、专属标签 |
 | `POST /accounts/{id}/status` | 启停，body：`{ status: 'enabled' \| 'disabled' }` |
 | `POST /accounts/test-connection` | 测试连接；传 `id` 时未填写的字段使用已保存配置 |
-| `POST /accounts/{id}/sync` | 立即同步，返回 `{ skipped, count, hasMore }` |
+| `POST /accounts/{id}/sync` | 立即同步新邮件，返回 `{ skipped, count, hasMore }`；首次仅拉最新一批 |
+| `POST /accounts/{id}/sync-history` | 异步拉取历史邮件：`{ limit? }`（0/空=全部），立即返回 `{ started, skipped?, history }`，进度在 `syncState.history` |
 
 添加账号请求体：
 
@@ -153,6 +154,7 @@
 | `POST /rules/{id}/status` | 启停 |
 | `POST /rules/sort` | `{ ids }` 按顺序重排优先级 |
 | `POST /rules/test` | 试运行：`{ id?, mailId, conditions?, accountIds?, direction? }`，不执行动作（扩展条件会真实执行判断） |
+| `POST /rules/{id}/execute` | 手动执行：`{ mailId }`，对该邮件求值已保存规则，命中则执行动作并写日志（不受启停状态影响）；返回试运行结果 + `executed`、`execution`（`{ ruleId, name, status, results }`），未命中时 `executed: false`。需 `rule:manage` |
 | `GET /rule-logs` | 执行日志，filter：`ruleId`、`mailId`、`accountId`、`direction`、`status` |
 
 规则请求体示例：
@@ -254,7 +256,7 @@
 | `mail.folderStats({ accountId })` | 文件夹与标签计数 |
 | `draft.save(data)` / `draft.send({ id })` | 保存 / 发送草稿 |
 | `label.list({ accountId })` | 标签列表 |
-| `rule.create(data)` / `rule.test({ id, mailId })` | 新建规则 / 试运行 |
+| `rule.create(data)` / `rule.test({ id, mailId })` / `rule.execute({ id, mailId })` | 新建规则 / 试运行 / 手动执行（命中才执行动作） |
 | `pipeline.run({ direction, mail, account })` | 对一封邮件执行规则，返回命中规则的执行结果 |
 | `template.list(...)` / `template.detail({ id })` | 模版列表 / 详情 |
 | `template.render({ id, template, mailId, accountId, data })` | 渲染模版，返回 `{ subject, html }` |

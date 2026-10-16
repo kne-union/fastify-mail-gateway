@@ -38,8 +38,8 @@ module.exports = ({ DataTypes }) => {
       },
       stopProcessing: {
         type: DataTypes.BOOLEAN,
-        defaultValue: false,
-        comment: '命中后是否停止执行后续规则'
+        defaultValue: true,
+        comment: '命中后是否停止执行后续规则（流水线已固定短路，此字段保留兼容）'
       },
       status: {
         type: DataTypes.ENUM('enabled', 'disabled'),
