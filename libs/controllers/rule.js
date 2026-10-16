@@ -41,7 +41,7 @@ const ruleBody = (required = []) => ({
       }
     },
     priority: { type: 'integer', description: '优先级，越小越先执行' },
-    stopProcessing: { type: 'boolean', description: '命中后停止执行后续规则' },
+    stopProcessing: { type: 'boolean', description: '命中后停止执行后续规则（流水线已固定短路，默认 true）' },
     status: { type: 'string', enum: ['enabled', 'disabled'], description: '状态' }
   }
 });
@@ -165,13 +165,13 @@ module.exports = fp(async (fastify, options) => {
       onRequest: options.getAuthenticate('rule'),
       schema: {
         summary: '试运行规则',
-        description: '判断邮件是否命中规则条件，不执行动作；可传 id 使用已保存规则，也可直接传 conditions/accountIds',
+        description: '判断邮件是否命中规则条件，不执行动作；mailId 与 mailIds 二选一（最多 20 封）；可传 id 使用已保存规则，也可直接传 conditions/accountIds',
         body: {
           type: 'object',
-          required: ['mailId'],
           properties: {
             id: { type: 'string', description: '规则 ID' },
-            mailId: { type: 'string', description: '邮件 ID' },
+            mailId: { type: 'string', description: '单封邮件 ID（与 mailIds 二选一）' },
+            mailIds: { type: 'array', items: { type: 'string' }, maxItems: 20, description: '多封邮件 ID，最多 20' },
             conditions: conditionsSchema,
             accountIds: { type: 'array', items: { type: 'string' } },
             direction: { type: 'string', enum: ['receive', 'send'], description: '传入 conditions 时按该方向校验扩展条件，默认取规则方向或 receive' }
@@ -180,6 +180,26 @@ module.exports = fp(async (fastify, options) => {
       }
     },
     async request => await services.rule.test(request.body)
+  );
+
+  fastify.post(
+    `${options.prefix}/rules/:id/execute`,
+    {
+      onRequest: options.getAuthenticate('rule:manage'),
+      schema: {
+        summary: '手动执行规则',
+        description: '对指定邮件求值已保存规则，命中则执行规则动作并写执行日志；mailId 与 mailIds 二选一（最多 20 封）；未命中不执行，不受规则启停状态影响',
+        params: idParams,
+        body: {
+          type: 'object',
+          properties: {
+            mailId: { type: 'string', description: '单封邮件 ID（与 mailIds 二选一）' },
+            mailIds: { type: 'array', items: { type: 'string' }, maxItems: 20, description: '多封邮件 ID，最多 20' }
+          }
+        }
+      }
+    },
+    async request => await services.rule.execute({ id: request.params.id, mailId: request.body.mailId, mailIds: request.body.mailIds })
   );
 
   fastify.get(

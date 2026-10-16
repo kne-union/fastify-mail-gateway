@@ -39,7 +39,7 @@ module.exports = fp(async (fastify, options) => {
     return { pageData: rows, totalCount: count };
   };
 
-  const create = async ({ name, description, direction = 'receive', accountIds = [], conditions, actions = [], priority = 0, stopProcessing = false, status = 'enabled' }) => {
+  const create = async ({ name, description, direction = 'receive', accountIds = [], conditions, actions = [], priority = 0, stopProcessing = true, status = 'enabled' }) => {
     const normalizedConditions = validateConditions(conditions, direction);
     services.action.validate({ actions, direction });
     return await models.rule.create({ name, description, direction, accountIds, conditions: normalizedConditions, actions, priority, stopProcessing, status });
@@ -84,14 +84,30 @@ module.exports = fp(async (fastify, options) => {
     }
   };
 
+  const MAX_TEST_MAILS = 20;
+
+  const normalizeMailIds = ({ mailId, mailIds }) => {
+    const ids = [
+      ...new Set(
+        []
+          .concat(mailIds || [], mailId || [])
+          .filter(Boolean)
+          .map(String)
+      )
+    ];
+    if (ids.length === 0) {
+      throw createError('请选择邮件');
+    }
+    if (ids.length > MAX_TEST_MAILS) {
+      throw createError(`最多选择 ${MAX_TEST_MAILS} 封邮件`);
+    }
+    return ids;
+  };
+
   /**
-   * 试运行：用已保存规则或传入的规则配置判断某封邮件是否命中，不执行任何动作
+   * 试运行单封：判断是否命中，不执行动作
    */
-  const test = async ({ id, conditions, accountIds, direction, mailId }) => {
-    const rule = id ? await detail({ id }) : null;
-    const targetDirection = direction || (rule ? rule.direction : 'receive');
-    const targetConditions = conditions !== undefined ? validateConditions(conditions, targetDirection) : rule ? rule.conditions : { match: 'all', items: [] };
-    const targetAccountIds = (accountIds !== undefined ? accountIds : rule ? rule.accountIds : []) || [];
+  const testOne = async ({ rule, targetDirection, targetConditions, targetAccountIds, mailId }) => {
     const mail = await services.mail.getInstance({ id: mailId });
     const plainMail = mail.get({ plain: true });
     const accountMatched = targetAccountIds.length === 0 || targetAccountIds.map(String).includes(String(plainMail.accountId));
@@ -103,7 +119,69 @@ module.exports = fp(async (fastify, options) => {
       rule: rule ? rule.get({ plain: true }) : null,
       direction: targetDirection
     });
-    return { matched: accountMatched && matched, accountMatched, details };
+    return {
+      mailId,
+      subject: plainMail.subject || '',
+      matched: accountMatched && matched,
+      accountMatched,
+      details
+    };
+  };
+
+  /**
+   * 试运行：支持 mailId 或 mailIds（最多 20），返回 { results, matchedCount, total }；单封时额外展开 matched/details 兼容旧调用
+   */
+  const test = async ({ id, conditions, accountIds, direction, mailId, mailIds }) => {
+    const rule = id ? await detail({ id }) : null;
+    const targetDirection = direction || (rule ? rule.direction : 'receive');
+    const targetConditions = conditions !== undefined ? validateConditions(conditions, targetDirection) : rule ? rule.conditions : { match: 'all', items: [] };
+    const targetAccountIds = (accountIds !== undefined ? accountIds : rule ? rule.accountIds : []) || [];
+    const ids = normalizeMailIds({ mailId, mailIds });
+    const results = [];
+    for (const targetMailId of ids) {
+      results.push(await testOne({ rule, targetDirection, targetConditions, targetAccountIds, mailId: targetMailId }));
+    }
+    const payload = {
+      results,
+      matchedCount: results.filter(item => item.matched).length,
+      total: results.length
+    };
+    if (results.length === 1) {
+      Object.assign(payload, results[0]);
+    }
+    return payload;
+  };
+
+  /**
+   * 手动执行：对 mailId / mailIds 逐封求值，命中则执行动作并写日志；不受启停状态影响
+   */
+  const execute = async ({ id, mailId, mailIds }) => {
+    const rule = await detail({ id });
+    const ids = normalizeMailIds({ mailId, mailIds });
+    const results = [];
+    for (const targetMailId of ids) {
+      const tested = await test({ id, mailId: targetMailId });
+      const item = tested.results[0];
+      if (!item.matched) {
+        results.push(Object.assign({}, item, { executed: false }));
+        continue;
+      }
+      const mail = await services.mail.getInstance({ id: targetMailId });
+      const plainMail = mail.get({ plain: true });
+      const { password, ...account } = (await services.account.detail({ id: plainMail.accountId })) || {};
+      const execution = await services.pipeline.executeRule({ rule, mail: plainMail, account, direction: rule.direction });
+      results.push(Object.assign({}, item, { executed: true, execution }));
+    }
+    const payload = {
+      results,
+      executedCount: results.filter(item => item.executed).length,
+      matchedCount: results.filter(item => item.matched).length,
+      total: results.length
+    };
+    if (results.length === 1) {
+      Object.assign(payload, results[0]);
+    }
+    return payload;
   };
 
   const logList = async ({ filter = {}, perPage = 20, currentPage = 1 } = {}) => {
@@ -128,5 +206,5 @@ module.exports = fp(async (fastify, options) => {
 
   const conditionOptions = ({ direction } = {}) => ({ fields: CONDITION_FIELDS, operators: CONDITION_OPERATORS, extensions: services.condition.list({ direction }) });
 
-  services.rule = { list, detail, create, save, setStatus, remove, sort, test, logList, conditionOptions };
+  services.rule = { list, detail, create, save, setStatus, remove, sort, test, execute, logList, conditionOptions };
 });

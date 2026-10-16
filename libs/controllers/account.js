@@ -117,8 +117,27 @@ module.exports = fp(async (fastify, options) => {
     `${options.prefix}/accounts/:id/sync`,
     {
       onRequest: options.getAuthenticate('account:manage'),
-      schema: { summary: '立即同步邮件', description: '立即从 IMAP 拉取新邮件并执行收信规则', params: idParams }
+      schema: { summary: '立即同步邮件', description: '立即从 IMAP 拉取新邮件并执行收信规则；首次仅拉取最新一批，更早的历史邮件请用 sync-history', params: idParams }
     },
     async request => await services.sync.syncAccount({ id: request.params.id })
+  );
+
+  fastify.post(
+    `${options.prefix}/accounts/:id/sync-history`,
+    {
+      onRequest: options.getAuthenticate('account:manage'),
+      schema: {
+        summary: '异步拉取历史邮件',
+        description: '后台按批次拉取早于当前已同步范围的历史邮件；limit 为空或 0 表示全部，立即返回，进度写在账号 syncState.history',
+        params: idParams,
+        body: {
+          type: 'object',
+          properties: {
+            limit: { type: ['integer', 'null'], minimum: 0, description: '最多拉取条数；0 / null / 省略表示全部' }
+          }
+        }
+      }
+    },
+    async request => await services.sync.startHistorySync({ id: request.params.id, limit: request.body?.limit })
   );
 });
