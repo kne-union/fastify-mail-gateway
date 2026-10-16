@@ -264,6 +264,21 @@ describe('@kne/fastify-mail-gateway', function () {
       await fastify.mailGateway.services.sync.syncAccount({ id: account.id });
     });
 
+    it('should search keyword in html body when the plain text part is empty', async () => {
+      await fastify.testContext.imap.addMessage({
+        subject: 'only-html',
+        messageId: '<html-only@x>',
+        text: '',
+        html: '<div>正文关键词南瓜</div>'
+      });
+      await fastify.mailGateway.services.sync.syncAccount({ id: account.id });
+      const stored = await fastify.mailGateway.models.mail.findOne({ where: { subject: 'only-html' } });
+      expect(stored.text).to.include('南瓜');
+      await stored.update({ text: '' });
+      const hit = await inject('GET', `/mails?filter[accountId]=${account.id}&filter[keyword]=${encodeURIComponent('南瓜')}`);
+      expect(hit.pageData.map(item => item.subject)).to.include('only-html');
+    });
+
     it('should mark read on detail, star, label and trash', async () => {
       const list = await inject('GET', `/mails?filter[accountId]=${account.id}&filter[isRead]=false`);
       expect(list.totalCount).to.equal(1);

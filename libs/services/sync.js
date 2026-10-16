@@ -1,6 +1,7 @@
 const fp = require('fastify-plugin');
 const { simpleParser } = require('mailparser');
 const { normalizeAddressList } = require('../utils/address');
+const { stripHtml } = require('../utils/condition');
 const { createError } = require('../utils/error');
 
 const PICK_HEADERS = ['auto-submitted', 'precedence', 'list-id', 'list-unsubscribe', 'x-auto-response-suppress', 'reply-to', 'return-path'];
@@ -70,7 +71,7 @@ module.exports = fp(async (fastify, options) => {
       cc: normalizeAddressList(parsed.cc),
       subject: parsed.subject || '',
       html: parsed.html || parsed.textAsHtml || '',
-      text: parsed.text || '',
+      text: String(parsed.text || '').trim() || stripHtml(parsed.html || parsed.textAsHtml || '').replace(/\s+/g, ' ').trim(),
       date: parsed.date || new Date(),
       attachments: toAttachmentMeta(parsed.attachments),
       headers: pickHeaders(parsed.headers),
