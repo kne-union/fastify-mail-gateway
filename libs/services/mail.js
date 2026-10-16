@@ -40,7 +40,8 @@ module.exports = fp(async (fastify, options) => {
     }
     if (filter.keyword) {
       const op = likeOp();
-      where[Op.or] = [{ subject: { [op]: `%${filter.keyword}%` } }, { text: { [op]: `%${filter.keyword}%` } }];
+      const pattern = `%${filter.keyword}%`;
+      where[Op.or] = [{ subject: { [op]: pattern } }, { text: { [op]: pattern } }, { html: { [op]: pattern } }];
     }
     if (filter.labelId) {
       where.id = { [Op.in]: await getMailIdsByLabel(filter.labelId) };

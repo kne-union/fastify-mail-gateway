@@ -27,7 +27,7 @@ module.exports = fp(async (fastify, options) => {
           accountId: { type: 'string', description: '邮箱账号 ID' },
           folder: { type: 'string', enum: ['inbox', 'sent', 'draft', 'trash'], description: '文件夹，默认 inbox' },
           labelId: { type: 'string', description: '标签 ID' },
-          keyword: { type: 'string', description: '主题或正文关键词' },
+          keyword: { type: 'string', description: '主题或正文关键词，正文同时匹配纯文本和 HTML' },
           isRead: { type: 'boolean', description: '是否已读' },
           isStarred: { type: 'boolean', description: '是否星标' }
         })
