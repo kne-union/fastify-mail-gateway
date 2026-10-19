@@ -1,4 +1,4 @@
-module.exports = ({ DataTypes }) => {
+module.exports = ({ DataTypes, options }) => {
   return {
     model: {
       name: {
@@ -27,6 +27,7 @@ module.exports = ({ DataTypes }) => {
     },
     associate: ({ templateCategory, template }) => {
       templateCategory.hasMany(template, { foreignKey: 'categoryId', as: 'templates', constraints: false });
+      templateCategory.belongsTo(options.getUserModel(), { foreignKey: 'userId', as: 'user', constraints: false, comment: '所属用户，系统默认分类为空' });
     },
     options: {
       comment: '邮件模版分类',

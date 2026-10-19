@@ -460,11 +460,12 @@ describe('@kne/fastify-mail-gateway', function () {
         priority: 2,
         actions: [{ type: 'collect', params: { tag: 'fallback' } }]
       });
+      const otherAccount = await createAccount({ address: 'other@test.local', username: 'other@test.local' });
       await inject('POST', '/rules', {
         name: '其他邮箱',
         direction: 'receive',
         priority: 0,
-        accountIds: ['not-this-account'],
+        accountIds: [otherAccount.id],
         actions: [{ type: 'collect', params: { tag: 'other' } }]
       });
 
@@ -959,6 +960,59 @@ describe('@kne/fastify-mail-gateway', function () {
       expect(saveError.statusCode).to.equal(403);
       const removeError = await inject('DELETE', `/labels/${updated.id}`).catch(e => e);
       expect(removeError.statusCode).to.equal(403);
+    });
+  });
+
+  describe('按用户隔离', () => {
+    const asUser = async (userId, method, url, payload) => {
+      const response = await fastify.inject({
+        method,
+        url: `/api/mail-gateway${url}`,
+        payload,
+        headers: { 'x-test-user': userId }
+      });
+      const body = response.body ? JSON.parse(response.body) : null;
+      if (response.statusCode >= 400) {
+        const error = new Error(body && body.message);
+        error.statusCode = response.statusCode;
+        throw error;
+      }
+      return body;
+    };
+
+    beforeEach(async () => {
+      fastify = await createFastify({
+        defaultLabels: [{ code: 'important', name: '重要', color: '#f5222d' }]
+      });
+      await fastify.mailGateway.services.label.includeDefaultLabels([{ code: 'important', name: '重要', color: '#f5222d' }]);
+    });
+
+    it('should hide another user data but keep shared system defaults', async () => {
+      const account = await asUser('1', 'POST', '/accounts', accountPayload());
+      await asUser('1', 'POST', '/contacts', { name: '张三', address: 'zhangsan@example.com' });
+      await asUser('1', 'POST', '/labels', { name: '客户', accountId: account.id });
+      await asUser('1', 'POST', '/templates', { name: '我的模版', html: '<p>hi</p>' });
+      await asUser('1', 'POST', '/template-categories', { name: '我的分类' });
+      await asUser('1', 'POST', '/rules', { name: '我的规则', direction: 'receive', conditions: { match: 'all', items: [] }, actions: [{ type: 'markRead' }] });
+
+      expect((await asUser('2', 'GET', '/accounts')).totalCount).to.equal(0);
+      expect((await asUser('2', 'GET', '/contacts')).totalCount).to.equal(0);
+      expect((await asUser('2', 'GET', '/templates?filter[level]=1')).totalCount).to.equal(0);
+      expect((await asUser('2', 'GET', '/template-categories')).pageData.map(item => item.name)).to.not.include('我的分类');
+      expect((await asUser('2', 'GET', '/rules')).totalCount).to.equal(0);
+      const labels = await asUser('2', 'GET', '/labels');
+      expect(labels.map(item => item.name)).to.deep.equal(['重要']);
+      expect(labels[0].level).to.equal(0);
+
+      const missing = await asUser('2', 'GET', `/accounts/${account.id}`).catch(e => e);
+      expect(missing.statusCode).to.equal(404);
+
+      const draft = await asUser('1', 'POST', '/drafts', { accountId: account.id, to: 'a@x.com', subject: '草稿', html: '<p>secret</p>' });
+      const otherAccount = await asUser('2', 'POST', '/accounts', accountPayload({ address: 'other-user@test.local', username: 'other-user@test.local' }));
+      const stolen = await asUser('2', 'POST', '/mails/send', { accountId: otherAccount.id, to: 'a@x.com', subject: 'x', html: 'x', draftId: draft.id }).catch(e => e);
+      expect(stolen.statusCode).to.equal(404);
+      const hiddenMail = await asUser('2', 'GET', `/mails/${draft.id}`).catch(e => e);
+      expect(hiddenMail.statusCode).to.equal(404);
     });
   });
 });

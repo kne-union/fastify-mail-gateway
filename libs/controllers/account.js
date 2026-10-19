@@ -1,5 +1,6 @@
 const fp = require('fastify-plugin');
 const { idParams, pageQuery, statusBody } = require('../utils/schema');
+const { userIdOf } = require('../utils/owner');
 
 const serverConfig = {
   type: 'object',
@@ -44,7 +45,7 @@ module.exports = fp(async (fastify, options) => {
     },
     async request => {
       const { filter, perPage, currentPage } = request.query;
-      return await services.account.list({ filter, perPage: Math.min(perPage, 100), currentPage });
+      return await services.account.list({ filter, perPage: Math.min(perPage, 100), currentPage, userId: userIdOf(request) });
     }
   );
 
@@ -54,7 +55,7 @@ module.exports = fp(async (fastify, options) => {
       onRequest: options.getAuthenticate('account'),
       schema: { summary: '邮箱账号详情', description: '获取邮箱账号详情，不返回密码', params: idParams }
     },
-    async request => await services.account.detail({ id: request.params.id })
+    async request => await services.account.detail({ id: request.params.id, userId: userIdOf(request) })
   );
 
   fastify.post(
@@ -67,7 +68,7 @@ module.exports = fp(async (fastify, options) => {
         body: accountBody(['name', 'address', 'username', 'password', 'imap', 'smtp'])
       }
     },
-    async request => await services.account.create(Object.assign({}, request.body, { userId: request.userInfo && request.userInfo.id }))
+    async request => await services.account.create(Object.assign({}, request.body, { userId: userIdOf(request) }))
   );
 
   fastify.put(
@@ -76,7 +77,7 @@ module.exports = fp(async (fastify, options) => {
       onRequest: options.getAuthenticate('account:manage'),
       schema: { summary: '修改邮箱账号', description: '修改邮箱账号，连接配置变化时会重新校验连通性', params: idParams, body: accountBody() }
     },
-    async request => await services.account.save(Object.assign({}, request.body, { id: request.params.id }))
+    async request => await services.account.save(Object.assign({}, request.body, { id: request.params.id, userId: userIdOf(request) }))
   );
 
   fastify.delete(
@@ -86,7 +87,7 @@ module.exports = fp(async (fastify, options) => {
       schema: { summary: '删除邮箱账号', description: '删除邮箱账号及其邮件和专属标签', params: idParams }
     },
     async request => {
-      await services.account.remove({ id: request.params.id });
+      await services.account.remove({ id: request.params.id, userId: userIdOf(request) });
       return {};
     }
   );
@@ -97,7 +98,7 @@ module.exports = fp(async (fastify, options) => {
       onRequest: options.getAuthenticate('account:manage'),
       schema: { summary: '启停邮箱账号', description: '停用后不再同步和发信', params: idParams, body: statusBody }
     },
-    async request => await services.account.setStatus({ id: request.params.id, status: request.body.status })
+    async request => await services.account.setStatus({ id: request.params.id, status: request.body.status, userId: userIdOf(request) })
   );
 
   fastify.post(
@@ -110,7 +111,7 @@ module.exports = fp(async (fastify, options) => {
         body: Object.assign(accountBody(), { properties: Object.assign({ id: { type: 'string', description: '已保存的账号 ID' } }, accountBody().properties) })
       }
     },
-    async request => await services.account.testConnection(request.body)
+    async request => await services.account.testConnection(Object.assign({}, request.body, { userId: userIdOf(request) }))
   );
 
   fastify.post(
@@ -119,7 +120,7 @@ module.exports = fp(async (fastify, options) => {
       onRequest: options.getAuthenticate('account:manage'),
       schema: { summary: '立即同步邮件', description: '立即从 IMAP 拉取新邮件并执行收信规则；首次仅拉取最新一批，更早的历史邮件请用 sync-history', params: idParams }
     },
-    async request => await services.sync.syncAccount({ id: request.params.id })
+    async request => await services.sync.syncAccount({ id: request.params.id, userId: userIdOf(request) })
   );
 
   fastify.post(
@@ -138,6 +139,6 @@ module.exports = fp(async (fastify, options) => {
         }
       }
     },
-    async request => await services.sync.startHistorySync({ id: request.params.id, limit: request.body?.limit })
+    async request => await services.sync.startHistorySync({ id: request.params.id, limit: request.body?.limit, userId: userIdOf(request) })
   );
 });

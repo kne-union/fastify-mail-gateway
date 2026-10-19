@@ -1,4 +1,4 @@
-module.exports = ({ DataTypes, definePrimaryType }) => {
+module.exports = ({ DataTypes, definePrimaryType, options }) => {
   return {
     model: {
       ruleId: definePrimaryType('ruleId', {
@@ -34,6 +34,7 @@ module.exports = ({ DataTypes, definePrimaryType }) => {
     associate: ({ ruleLog, rule, mail }) => {
       ruleLog.belongsTo(rule, { foreignKey: 'ruleId', as: 'rule', constraints: false });
       ruleLog.belongsTo(mail, { foreignKey: 'mailId', as: 'mail', constraints: false });
+      ruleLog.belongsTo(options.getUserModel(), { foreignKey: 'userId', as: 'user', constraints: false, comment: '所属用户' });
     },
     options: {
       comment: '规则执行日志（仅记录命中的规则）',

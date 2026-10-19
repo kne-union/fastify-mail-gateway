@@ -1,8 +1,8 @@
-module.exports = ({ DataTypes, definePrimaryType }) => {
+module.exports = ({ DataTypes, definePrimaryType, options }) => {
   return {
     model: {
       accountId: definePrimaryType('accountId', {
-        comment: '所属邮箱账号，为空表示所有邮箱共用'
+        comment: '所属邮箱账号，为空表示该用户的全部邮箱共用；系统默认标签同样为空，且不属于任何用户'
       }),
       code: {
         type: DataTypes.STRING,
@@ -30,12 +30,13 @@ module.exports = ({ DataTypes, definePrimaryType }) => {
     },
     associate: ({ label, account, mail, mailLabel }) => {
       label.belongsTo(account, { foreignKey: 'accountId', as: 'account', constraints: false });
+      label.belongsTo(options.getUserModel(), { foreignKey: 'userId', as: 'user', constraints: false, comment: '所属用户，系统默认标签为空' });
       label.belongsToMany(mail, { through: mailLabel, foreignKey: 'labelId', otherKey: 'mailId', as: 'mails', constraints: false });
     },
     options: {
       comment: '邮件标签',
       // 不在 indexes 中声明 code/level：已有 SQLite 库 sync 不会自动 ADD COLUMN，却会先 CREATE INDEX 导致启动失败
-      indexes: [{ fields: ['account_id'] }, { fields: ['sort'] }]
+      indexes: [{ fields: ['account_id'] }, { fields: ['user_id'] }, { fields: ['sort'] }]
     }
   };
 };

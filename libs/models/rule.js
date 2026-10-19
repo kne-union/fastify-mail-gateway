@@ -1,4 +1,4 @@
-module.exports = ({ DataTypes }) => {
+module.exports = ({ DataTypes, options }) => {
   return {
     model: {
       name: {
@@ -19,7 +19,7 @@ module.exports = ({ DataTypes }) => {
       accountIds: {
         type: DataTypes.JSON,
         defaultValue: [],
-        comment: '适用的邮箱账号 id 列表，为空表示所有邮箱'
+        comment: '适用的邮箱账号 id 列表，为空表示该用户的全部邮箱'
       },
       conditions: {
         type: DataTypes.JSON,
@@ -47,9 +47,12 @@ module.exports = ({ DataTypes }) => {
         comment: '状态'
       }
     },
+    associate: ({ rule }) => {
+      rule.belongsTo(options.getUserModel(), { foreignKey: 'userId', as: 'user', constraints: false, comment: '所属用户' });
+    },
     options: {
-      comment: '邮件收发规则',
-      indexes: [{ fields: ['direction', 'status', 'priority'] }]
+      comment: '邮件收发规则，按用户隔离',
+      indexes: [{ fields: ['user_id'] }, { fields: ['direction', 'status', 'priority'] }]
     }
   };
 };

@@ -1,5 +1,6 @@
 const fp = require('fastify-plugin');
 const { idParams, idsBody, pageQuery, addressField, attachmentsField } = require('../utils/schema');
+const { userIdOf } = require('../utils/owner');
 
 const composeProperties = {
   accountId: { type: 'string', description: '发信邮箱账号 ID' },
@@ -35,7 +36,7 @@ module.exports = fp(async (fastify, options) => {
     },
     async request => {
       const { filter, perPage, currentPage } = request.query;
-      return await services.mail.list({ filter, perPage: Math.min(perPage, 100), currentPage });
+      return await services.mail.list({ filter, perPage: Math.min(perPage, 100), currentPage, userId: userIdOf(request) });
     }
   );
 
@@ -49,7 +50,7 @@ module.exports = fp(async (fastify, options) => {
         querystring: { type: 'object', properties: { accountId: { type: 'string', description: '邮箱账号 ID' } } }
       }
     },
-    async request => await services.mail.folderStats({ accountId: request.query.accountId })
+    async request => await services.mail.folderStats({ accountId: request.query.accountId, userId: userIdOf(request) })
   );
 
   fastify.get(
@@ -63,7 +64,7 @@ module.exports = fp(async (fastify, options) => {
         querystring: { type: 'object', properties: { markRead: { type: 'boolean', default: true, description: '是否标为已读' } } }
       }
     },
-    async request => await services.mail.detail({ id: request.params.id, markRead: request.query.markRead })
+    async request => await services.mail.detail({ id: request.params.id, markRead: request.query.markRead, userId: userIdOf(request) })
   );
 
   fastify.post(
@@ -83,7 +84,7 @@ module.exports = fp(async (fastify, options) => {
         }
       }
     },
-    async request => await services.mail.downloadAttachment({ id: request.params.id, index: request.params.index })
+    async request => await services.mail.downloadAttachment({ id: request.params.id, index: request.params.index, userId: userIdOf(request) })
   );
 
   fastify.post(
@@ -93,7 +94,7 @@ module.exports = fp(async (fastify, options) => {
       schema: { summary: '设置已读/未读', description: '批量设置已读状态', body: idsBody({ isRead: { type: 'boolean', default: true } }) }
     },
     async request => {
-      await services.mail.setRead(request.body);
+      await services.mail.setRead(Object.assign({}, request.body, { userId: userIdOf(request) }));
       return {};
     }
   );
@@ -105,7 +106,7 @@ module.exports = fp(async (fastify, options) => {
       schema: { summary: '设置星标', description: '批量设置星标', body: idsBody({ isStarred: { type: 'boolean', default: true } }) }
     },
     async request => {
-      await services.mail.setStar(request.body);
+      await services.mail.setStar(Object.assign({}, request.body, { userId: userIdOf(request) }));
       return {};
     }
   );
@@ -121,7 +122,7 @@ module.exports = fp(async (fastify, options) => {
         body: { type: 'object', required: ['labelIds'], properties: { labelIds: { type: 'array', items: { type: 'string' } } } }
       }
     },
-    async request => await services.mail.setLabels({ id: request.params.id, labelIds: request.body.labelIds })
+    async request => await services.mail.setLabels({ id: request.params.id, labelIds: request.body.labelIds, userId: userIdOf(request) })
   );
 
   fastify.post(
@@ -131,7 +132,7 @@ module.exports = fp(async (fastify, options) => {
       schema: { summary: '移入回收站', description: '批量移入回收站', body: idsBody() }
     },
     async request => {
-      await services.mail.moveToTrash(request.body);
+      await services.mail.moveToTrash(Object.assign({}, request.body, { userId: userIdOf(request) }));
       return {};
     }
   );
@@ -143,7 +144,7 @@ module.exports = fp(async (fastify, options) => {
       schema: { summary: '从回收站恢复', description: '恢复到移入回收站前的文件夹', body: idsBody() }
     },
     async request => {
-      await services.mail.restore(request.body);
+      await services.mail.restore(Object.assign({}, request.body, { userId: userIdOf(request) }));
       return {};
     }
   );
@@ -155,7 +156,7 @@ module.exports = fp(async (fastify, options) => {
       schema: { summary: '彻底删除邮件', description: '批量删除邮件（仅删除本地记录，不影响邮件服务器）', body: idsBody() }
     },
     async request => {
-      await services.mail.remove(request.body);
+      await services.mail.remove(Object.assign({}, request.body, { userId: userIdOf(request) }));
       return {};
     }
   );
@@ -170,7 +171,7 @@ module.exports = fp(async (fastify, options) => {
         body: { type: 'object', required: ['accountId', 'to'], properties: composeProperties }
       }
     },
-    async request => await services.mail.send(request.body)
+    async request => await services.mail.send(Object.assign({}, request.body, { userId: userIdOf(request) }))
   );
 
   fastify.post(
@@ -179,7 +180,7 @@ module.exports = fp(async (fastify, options) => {
       onRequest: options.getAuthenticate('mail:send'),
       schema: { summary: '新建草稿', description: '保存为草稿', body: { type: 'object', required: ['accountId'], properties: composeProperties } }
     },
-    async request => await services.draft.save(request.body)
+    async request => await services.draft.save(Object.assign({}, request.body, { userId: userIdOf(request) }))
   );
 
   fastify.put(
@@ -188,7 +189,7 @@ module.exports = fp(async (fastify, options) => {
       onRequest: options.getAuthenticate('mail:send'),
       schema: { summary: '保存草稿', description: '更新草稿内容', params: idParams, body: { type: 'object', required: ['accountId'], properties: composeProperties } }
     },
-    async request => await services.draft.save(Object.assign({}, request.body, { id: request.params.id }))
+    async request => await services.draft.save(Object.assign({}, request.body, { id: request.params.id, userId: userIdOf(request) }))
   );
 
   fastify.delete(
@@ -198,7 +199,7 @@ module.exports = fp(async (fastify, options) => {
       schema: { summary: '删除草稿', description: '删除草稿', params: idParams }
     },
     async request => {
-      await services.draft.remove({ id: request.params.id });
+      await services.draft.remove({ id: request.params.id, userId: userIdOf(request) });
       return {};
     }
   );
@@ -209,6 +210,6 @@ module.exports = fp(async (fastify, options) => {
       onRequest: options.getAuthenticate('mail:send'),
       schema: { summary: '发送草稿', description: '发送草稿；body 中传入的字段会先保存到草稿再发送', params: idParams, body: { type: 'object', properties: composeProperties } }
     },
-    async request => await services.draft.send(Object.assign({}, request.body, { id: request.params.id }))
+    async request => await services.draft.send(Object.assign({}, request.body, { id: request.params.id, userId: userIdOf(request) }))
   );
 });

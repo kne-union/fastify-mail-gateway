@@ -18,9 +18,12 @@ module.exports = fp(async (fastify, options) => {
     return accountIds.length === 0 || accountIds.includes(String(accountId));
   };
 
-  const loadRules = async ({ direction }) => {
+  const loadRules = async ({ direction, userId }) => {
+    if (userId == null || userId === '') {
+      return [];
+    }
     return await models.rule.findAll({
-      where: { direction, status: 'enabled' },
+      where: { direction, status: 'enabled', userId },
       order: [
         ['priority', 'ASC'],
         ['createdAt', 'ASC']
@@ -43,7 +46,7 @@ module.exports = fp(async (fastify, options) => {
     const executionTime = Number((process.hrtime.bigint() - startTime) / 1000000n);
     const failedCount = results.filter(item => !item.success).length;
     const status = failedCount === 0 ? 'success' : failedCount === results.length ? 'failed' : 'partial';
-    await models.ruleLog.create({ ruleId: rule.id, mailId: mail.id, accountId: mail.accountId, direction, status, results, executionTime });
+    await models.ruleLog.create({ ruleId: rule.id, mailId: mail.id, accountId: mail.accountId, userId: account && account.userId, direction, status, results, executionTime });
     return { ruleId: rule.id, name: rule.name, status, results };
   };
 
@@ -54,7 +57,7 @@ module.exports = fp(async (fastify, options) => {
   const run = async ({ direction, mail, account }) => {
     const plainMail = toPlainMail(mail);
     const publicAccount = toPublicAccount(account) || toPlainMail(await services.account.detail({ id: plainMail.accountId }));
-    const rules = (await loadRules({ direction })).filter(rule => ruleMatchesAccount(rule, plainMail.accountId));
+    const rules = (await loadRules({ direction, userId: publicAccount && publicAccount.userId })).filter(rule => ruleMatchesAccount(rule, plainMail.accountId));
     const executed = [];
     for (const rule of rules) {
       const { matched } = await services.condition.evaluate({ conditions: rule.conditions, mail: plainMail, account: publicAccount, rule: toPlainMail(rule), direction });

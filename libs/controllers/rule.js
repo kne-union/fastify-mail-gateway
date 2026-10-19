@@ -1,4 +1,5 @@
 const fp = require('fastify-plugin');
+const { userIdOf } = require('../utils/owner');
 const { idParams, pageQuery, statusBody } = require('../utils/schema');
 
 const conditionsSchema = {
@@ -91,7 +92,7 @@ module.exports = fp(async (fastify, options) => {
     },
     async request => {
       const { filter, perPage, currentPage } = request.query;
-      return await services.rule.list({ filter, perPage: Math.min(perPage, 100), currentPage });
+      return await services.rule.list({ filter, perPage: Math.min(perPage, 100), currentPage, userId: userIdOf(request) });
     }
   );
 
@@ -101,7 +102,7 @@ module.exports = fp(async (fastify, options) => {
       onRequest: options.getAuthenticate('rule'),
       schema: { summary: '规则详情', description: '规则详情', params: idParams }
     },
-    async request => await services.rule.detail({ id: request.params.id })
+    async request => await services.rule.detail({ id: request.params.id, userId: userIdOf(request) })
   );
 
   fastify.post(
@@ -110,7 +111,7 @@ module.exports = fp(async (fastify, options) => {
       onRequest: options.getAuthenticate('rule:manage'),
       schema: { summary: '新建规则', description: '新建收发规则，会校验条件和动作配置', body: ruleBody(['name', 'direction']) }
     },
-    async request => await services.rule.create(request.body)
+    async request => await services.rule.create(Object.assign({}, request.body, { userId: userIdOf(request) }))
   );
 
   fastify.put(
@@ -119,7 +120,7 @@ module.exports = fp(async (fastify, options) => {
       onRequest: options.getAuthenticate('rule:manage'),
       schema: { summary: '修改规则', description: '修改收发规则', params: idParams, body: ruleBody() }
     },
-    async request => await services.rule.save(Object.assign({}, request.body, { id: request.params.id }))
+    async request => await services.rule.save(Object.assign({}, request.body, { id: request.params.id, userId: userIdOf(request) }))
   );
 
   fastify.delete(
@@ -129,7 +130,7 @@ module.exports = fp(async (fastify, options) => {
       schema: { summary: '删除规则', description: '删除规则', params: idParams }
     },
     async request => {
-      await services.rule.remove({ id: request.params.id });
+      await services.rule.remove({ id: request.params.id, userId: userIdOf(request) });
       return {};
     }
   );
@@ -140,7 +141,7 @@ module.exports = fp(async (fastify, options) => {
       onRequest: options.getAuthenticate('rule:manage'),
       schema: { summary: '启停规则', description: '启用或停用规则', params: idParams, body: statusBody }
     },
-    async request => await services.rule.setStatus({ id: request.params.id, status: request.body.status })
+    async request => await services.rule.setStatus({ id: request.params.id, status: request.body.status, userId: userIdOf(request) })
   );
 
   fastify.post(
@@ -154,7 +155,7 @@ module.exports = fp(async (fastify, options) => {
       }
     },
     async request => {
-      await services.rule.sort(request.body);
+      await services.rule.sort(Object.assign({}, request.body, { userId: userIdOf(request) }));
       return {};
     }
   );
@@ -179,7 +180,7 @@ module.exports = fp(async (fastify, options) => {
         }
       }
     },
-    async request => await services.rule.test(request.body)
+    async request => await services.rule.test(Object.assign({}, request.body, { userId: userIdOf(request) }))
   );
 
   fastify.post(
@@ -199,7 +200,7 @@ module.exports = fp(async (fastify, options) => {
         }
       }
     },
-    async request => await services.rule.execute({ id: request.params.id, mailId: request.body.mailId, mailIds: request.body.mailIds })
+    async request => await services.rule.execute({ id: request.params.id, mailId: request.body.mailId, mailIds: request.body.mailIds, userId: userIdOf(request) })
   );
 
   fastify.get(
@@ -220,7 +221,7 @@ module.exports = fp(async (fastify, options) => {
     },
     async request => {
       const { filter, perPage, currentPage } = request.query;
-      return await services.rule.logList({ filter, perPage: Math.min(perPage, 100), currentPage });
+      return await services.rule.logList({ filter, perPage: Math.min(perPage, 100), currentPage, userId: userIdOf(request) });
     }
   );
 });

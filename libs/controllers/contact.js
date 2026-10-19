@@ -1,12 +1,13 @@
 const fp = require('fastify-plugin');
 const { idParams, pageQuery } = require('../utils/schema');
+const { userIdOf } = require('../utils/owner');
 
 const contactBody = (required = []) => ({
   type: 'object',
   required,
   properties: {
     name: { type: 'string', description: '联系人名称' },
-    address: { type: 'string', format: 'email', description: '邮箱地址，不可重复' },
+    address: { type: 'string', format: 'email', description: '邮箱地址，同一用户下不可重复' },
     avatar: { type: 'string', description: '头像文件 id' },
     remark: { type: 'string', description: '备注' }
   }
@@ -28,7 +29,7 @@ module.exports = fp(async (fastify, options) => {
         })
       }
     },
-    async request => await services.contact.list(request.query)
+    async request => await services.contact.list(Object.assign({}, request.query, { userId: userIdOf(request) }))
   );
 
   fastify.post(
@@ -37,7 +38,7 @@ module.exports = fp(async (fastify, options) => {
       onRequest: options.getAuthenticate('contact:manage'),
       schema: { summary: '新建联系人', description: '新建联系人，邮箱地址已存在时返回 409', body: contactBody(['address']) }
     },
-    async request => await services.contact.create(request.body)
+    async request => await services.contact.create(Object.assign({}, request.body, { userId: userIdOf(request) }))
   );
 
   fastify.put(
@@ -46,7 +47,7 @@ module.exports = fp(async (fastify, options) => {
       onRequest: options.getAuthenticate('contact:manage'),
       schema: { summary: '修改联系人', description: '修改联系人', params: idParams, body: contactBody() }
     },
-    async request => await services.contact.save(Object.assign({}, request.body, { id: request.params.id }))
+    async request => await services.contact.save(Object.assign({}, request.body, { id: request.params.id, userId: userIdOf(request) }))
   );
 
   fastify.delete(
@@ -56,7 +57,7 @@ module.exports = fp(async (fastify, options) => {
       schema: { summary: '删除联系人', description: '删除联系人', params: idParams }
     },
     async request => {
-      await services.contact.remove({ id: request.params.id });
+      await services.contact.remove({ id: request.params.id, userId: userIdOf(request) });
       return {};
     }
   );

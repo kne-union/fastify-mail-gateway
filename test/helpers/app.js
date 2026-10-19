@@ -32,6 +32,10 @@ const createFastify = async (options = {}) => {
   const sentMails = [];
   fastify.decorate('testContext', { imap, sentMails });
 
+  fastify.addHook('onRequest', async request => {
+    request.userInfo = { id: request.headers['x-test-user'] || '1' };
+  });
+
   await fastify.register(require('../../index'), {
     prefix: '/api/mail-gateway',
     syncCronTime: false,

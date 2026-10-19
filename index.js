@@ -100,15 +100,11 @@ module.exports = fp(
           services.condition.register(type, condition);
         });
 
-        if (options.templateDir) {
-          fastify.sequelize.syncPromise.then(() => services.template.includeTemplate(options.templateDir)).catch(e => fastify.log.error(e, '[fastify-mail-gateway] 载入系统默认邮件模版失败'));
-        }
-
-        if (Array.isArray(options.defaultLabels) && options.defaultLabels.length > 0) {
-          fastify.sequelize.syncPromise
-            .then(() => services.label.includeDefaultLabels(options.defaultLabels))
-            .catch(e => fastify.log.error(e, '[fastify-mail-gateway] 载入系统默认标签失败'));
-        }
+        fastify.sequelize.syncPromise
+          .then(() => services.ownership.prepare())
+          .then(() => (options.templateDir ? services.template.includeTemplate(options.templateDir) : null))
+          .then(() => (Array.isArray(options.defaultLabels) && options.defaultLabels.length > 0 ? services.label.includeDefaultLabels(options.defaultLabels) : null))
+          .catch(e => fastify.log.error(e, '[fastify-mail-gateway] 初始化用户隔离或系统默认数据失败'));
 
         if (options.syncCronTime) {
           fastify.cron.createJob({

@@ -59,24 +59,24 @@ module.exports = ({ register, createFormSchema }) => {
     builtIn: true,
     label: '标为已读',
     directions: ['receive'],
-    handler: async ({ mail, services }) => {
-      await services.mail.setRead({ ids: [mail.id], isRead: true });
+    handler: async ({ mail, account, services }) => {
+      await services.mail.setRead({ ids: [mail.id], isRead: true, userId: account && account.userId });
     }
   });
 
   register('star', {
     builtIn: true,
     label: '加星标',
-    handler: async ({ mail, services }) => {
-      await services.mail.setStar({ ids: [mail.id], isStarred: true });
+    handler: async ({ mail, account, services }) => {
+      await services.mail.setStar({ ids: [mail.id], isStarred: true, userId: account && account.userId });
     }
   });
 
   register('moveToTrash', {
     builtIn: true,
     label: '移入回收站',
-    handler: async ({ mail, services }) => {
-      await services.mail.moveToTrash({ ids: [mail.id] });
+    handler: async ({ mail, account, services }) => {
+      await services.mail.moveToTrash({ ids: [mail.id], userId: account && account.userId });
     }
   });
 
@@ -116,7 +116,8 @@ module.exports = ({ register, createFormSchema }) => {
       }
       let template = { subject: params.subject, html: params.html };
       if (params.templateId) {
-        const target = await services.template.detail({ id: params.templateId });
+        const templateId = typeof params.templateId === 'object' ? params.templateId.id || params.templateId.value : params.templateId;
+        const target = await services.template.detail({ id: templateId, userId: account && account.userId });
         if (target.status !== 'enabled') {
           throw new Error(`邮件模版「${target.name}」已停用`);
         }
@@ -124,6 +125,7 @@ module.exports = ({ register, createFormSchema }) => {
       }
       const data = { mail, account };
       const reply = await services.mail.send({
+        userId: account && account.userId,
         accountId: mail.accountId,
         to: [sender],
         subject: renderTemplate(template.subject || 'Re: {{mail.subject}}', data),
@@ -145,17 +147,18 @@ module.exports = ({ register, createFormSchema }) => {
       { type: 'MailContactSelect', name: 'to', label: '转发给', rule: 'REQ' },
       { type: 'TextArea', name: 'comment', label: '附言', props: { rows: 3 } }
     ]),
-    handler: async ({ mail, params, services, log }) => {
+    handler: async ({ mail, account, params, services, log }) => {
       const comment = params.comment ? `<div>${String(params.comment).replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\n/g, '<br/>')}</div>` : '';
       const attachments = [];
       for (const [index, item] of (mail.attachments || []).entries()) {
         try {
-          attachments.push(item.id || item.url ? item : await services.mail.downloadAttachment({ id: mail.id, index }));
+          attachments.push(item.id || item.url ? item : await services.mail.downloadAttachment({ id: mail.id, index, userId: account && account.userId }));
         } catch (e) {
           log(`附件未转发: ${item.filename}`, e.message);
         }
       }
       const forwarded = await services.mail.send({
+        userId: account && account.userId,
         accountId: mail.accountId,
         to: params.to,
         subject: `Fwd: ${mail.subject || ''}`,

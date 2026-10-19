@@ -6,10 +6,16 @@ const { createError } = require('../utils/error');
 module.exports = fp(async (fastify, options) => {
   const { models, services } = fastify[options.name];
 
-  const getDraft = async ({ id }) => {
+  const getDraft = async ({ id, userId }) => {
     const draft = await models.mail.findOne({ where: { id, folder: 'draft' } });
     if (!draft) {
       throw createError('草稿不存在', 404);
+    }
+    if (userId != null && userId !== '') {
+      const account = await models.account.findOne({ where: { id: draft.accountId, userId } });
+      if (!account) {
+        throw createError('草稿不存在', 404);
+      }
     }
     return draft;
   };
@@ -17,8 +23,8 @@ module.exports = fp(async (fastify, options) => {
   /**
    * 保存草稿：不传 id 新建，传 id 更新
    */
-  const save = async ({ id, accountId, to, cc, bcc, subject, html, attachments, inReplyTo, references }) => {
-    const account = await services.account.detail({ id: accountId });
+  const save = async ({ id, accountId, to, cc, bcc, subject, html, attachments, inReplyTo, references, userId }) => {
+    const account = await services.account.detail({ id: accountId, userId });
     const data = {
       accountId,
       folder: 'draft',
@@ -36,24 +42,25 @@ module.exports = fp(async (fastify, options) => {
       date: new Date()
     };
     if (id) {
-      const draft = await getDraft({ id });
+      const draft = await getDraft({ id, userId });
       await draft.update(data);
       return draft;
     }
     return await models.mail.create(data);
   };
 
-  const remove = async ({ id }) => {
-    const draft = await getDraft({ id });
+  const remove = async ({ id, userId }) => {
+    const draft = await getDraft({ id, userId });
     await draft.destroy();
   };
 
   /**
    * 发送草稿；可同时传入最新的邮件字段，先保存再发送
    */
-  const send = async ({ id, ...data }) => {
-    const draft = Object.keys(data).length > 0 ? await save(Object.assign({ id }, data)) : await getDraft({ id });
+  const send = async ({ id, userId, ...data }) => {
+    const draft = Object.keys(data).length > 0 ? await save(Object.assign({ id, userId }, data)) : await getDraft({ id, userId });
     return await services.mail.send({
+      userId,
       accountId: draft.accountId,
       to: draft.to,
       cc: draft.cc,

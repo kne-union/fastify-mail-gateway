@@ -3,6 +3,13 @@ const nodemailer = require('nodemailer');
 const { encrypt, decrypt } = require('../utils/crypto');
 const { createError } = require('../utils/error');
 
+const requireUser = userId => {
+  if (userId == null || userId === '') {
+    throw createError('未登录', 401);
+  }
+  return userId;
+};
+
 module.exports = fp(async (fastify, options) => {
   const { models, services } = fastify[options.name];
   const { Op } = fastify.sequelize.Sequelize;
@@ -64,10 +71,10 @@ module.exports = fp(async (fastify, options) => {
   /**
    * 测试 IMAP 与 SMTP 连通性；传 id 时使用已保存配置，传入的字段会覆盖已保存配置（用于编辑时不重填密码）
    */
-  const testConnection = async ({ id, ...config }) => {
+  const testConnection = async ({ id, userId, ...config }) => {
     let target = config;
     if (id) {
-      const account = await getWithPassword({ id });
+      const account = await getWithPassword({ id, userId: requireUser(userId) });
       target = Object.assign({}, account, Object.fromEntries(Object.entries(config).filter(([, value]) => value != null && value !== '')));
     }
     const connectionConfig = toConnectionConfig(target);
@@ -85,8 +92,12 @@ module.exports = fp(async (fastify, options) => {
     }
   };
 
-  const detail = async ({ id }) => {
-    const account = await models.account.findByPk(id);
+  const detail = async ({ id, userId }) => {
+    const where = { id };
+    if (userId != null && userId !== '') {
+      where.userId = userId;
+    }
+    const account = await models.account.findOne({ where });
     if (!account) {
       throw createError('邮箱账号不存在', 404);
     }
@@ -96,8 +107,12 @@ module.exports = fp(async (fastify, options) => {
   /**
    * 返回包含解密后密码的普通对象，仅供服务内部收发信使用，禁止直接返回给接口
    */
-  const getWithPassword = async ({ id }) => {
-    const account = await models.account.scope('withPassword').findByPk(id);
+  const getWithPassword = async ({ id, userId }) => {
+    const where = { id };
+    if (userId != null && userId !== '') {
+      where.userId = userId;
+    }
+    const account = await models.account.scope('withPassword').findOne({ where });
     if (!account) {
       throw createError('邮箱账号不存在', 404);
     }
@@ -105,8 +120,8 @@ module.exports = fp(async (fastify, options) => {
     return Object.assign(plain, { password: decrypt(plain.password, options.secretKey) });
   };
 
-  const list = async ({ filter = {}, perPage = 20, currentPage = 1 } = {}) => {
-    const where = {};
+  const list = async ({ filter = {}, perPage = 20, currentPage = 1, userId } = {}) => {
+    const where = { userId: requireUser(userId) };
     if (filter.id) {
       where.id = filter.id;
     }
@@ -126,6 +141,7 @@ module.exports = fp(async (fastify, options) => {
   };
 
   const create = async ({ name, address, username, password, imap, smtp, skipVerify, userId }) => {
+    requireUser(userId);
     if (!skipVerify) {
       await assertConnection({ username, password, imap, smtp });
     }
@@ -138,17 +154,18 @@ module.exports = fp(async (fastify, options) => {
       smtp,
       userId
     });
-    return await detail({ id: account.id });
+    return await detail({ id: account.id, userId });
   };
 
-  const save = async ({ id, skipVerify, ...data }) => {
-    const account = await models.account.scope('withPassword').findByPk(id);
+  const save = async ({ id, skipVerify, userId, ...data }) => {
+    requireUser(userId);
+    const account = await models.account.scope('withPassword').findOne({ where: { id, userId } });
     if (!account) {
       throw createError('邮箱账号不存在', 404);
     }
     const connectionChanged = ['username', 'password', 'imap', 'smtp'].some(key => data[key] != null && data[key] !== '');
     if (connectionChanged && !skipVerify) {
-      await assertConnection(Object.assign({ id }, data));
+      await assertConnection(Object.assign({ id, userId }, data));
     }
     ['name', 'address', 'username', 'imap', 'smtp'].forEach(key => {
       if (data[key] != null) {
@@ -162,18 +179,18 @@ module.exports = fp(async (fastify, options) => {
       account.syncState = {};
     }
     await account.save();
-    return await detail({ id });
+    return await detail({ id, userId });
   };
 
-  const setStatus = async ({ id, status }) => {
-    const account = await detail({ id });
+  const setStatus = async ({ id, status, userId }) => {
+    const account = await detail({ id, userId: requireUser(userId) });
     account.status = status;
     await account.save();
     return account;
   };
 
-  const remove = async ({ id }) => {
-    const account = await detail({ id });
+  const remove = async ({ id, userId }) => {
+    const account = await detail({ id, userId: requireUser(userId) });
     const mailIds = (await models.mail.findAll({ where: { accountId: id }, attributes: ['id'], raw: true })).map(item => item.id);
     if (mailIds.length > 0) {
       await models.mailLabel.destroy({ where: { mailId: mailIds } });

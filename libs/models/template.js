@@ -1,4 +1,4 @@
-module.exports = ({ DataTypes, definePrimaryType }) => {
+module.exports = ({ DataTypes, definePrimaryType, options }) => {
   return {
     model: {
       categoryId: definePrimaryType('categoryId', {
@@ -43,6 +43,7 @@ module.exports = ({ DataTypes, definePrimaryType }) => {
     },
     associate: ({ template, templateCategory }) => {
       template.belongsTo(templateCategory, { foreignKey: 'categoryId', as: 'category', constraints: false });
+      template.belongsTo(options.getUserModel(), { foreignKey: 'userId', as: 'user', constraints: false, comment: '所属用户，系统默认模版为空' });
     },
     options: {
       comment: '邮件模版',
