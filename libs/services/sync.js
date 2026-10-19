@@ -210,7 +210,13 @@ module.exports = fp(async (fastify, options) => {
     return { created, currentUid, oldestUid };
   };
 
-  const syncAccount = async ({ id }) => {
+  const syncAccount = async ({ id, userId }) => {
+    if (userId != null && userId !== '') {
+      const owned = await models.account.findOne({ where: { id, userId } });
+      if (!owned) {
+        throw createError('邮箱账号不存在', 404);
+      }
+    }
     if (syncingAccounts.has(String(id))) {
       return { skipped: true, count: 0 };
     }
@@ -389,7 +395,13 @@ module.exports = fp(async (fastify, options) => {
   /**
    * 启动历史邮件异步拉取：limit 为空/0 表示全部；立即返回，后台按 syncBatchSize 分批执行
    */
-  const startHistorySync = async ({ id, limit }) => {
+  const startHistorySync = async ({ id, limit, userId }) => {
+    if (userId != null && userId !== '') {
+      const owned = await models.account.findOne({ where: { id, userId } });
+      if (!owned) {
+        throw createError('邮箱账号不存在', 404);
+      }
+    }
     const accountModel = await models.account.findByPk(id);
     if (!accountModel) {
       throw createError('邮箱账号不存在', 404);

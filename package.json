@@ -1,6 +1,6 @@
 {
   "name": "@kne/fastify-mail-gateway",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "邮件网关 Fastify 插件：托管 IMAP/SMTP 邮箱，收取、发送和管理邮件，支持标签、草稿，以及可动态配置的收发规则中间件（打标签、自动回复、转发、webhook、自定义动作）",
   "main": "index.js",
   "scripts": {

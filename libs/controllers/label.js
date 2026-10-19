@@ -1,11 +1,12 @@
 const fp = require('fastify-plugin');
 const { idParams } = require('../utils/schema');
+const { userIdOf } = require('../utils/owner');
 
 const labelBody = (required = []) => ({
   type: 'object',
   required,
   properties: {
-    accountId: { type: ['string', 'null'], description: '所属邮箱账号 ID，为空表示全局标签' },
+    accountId: { type: ['string', 'null'], description: '所属邮箱账号 ID，为空表示当前用户的全部邮箱共用' },
     name: { type: 'string', description: '标签名称' },
     color: { type: 'string', description: '颜色' },
     sort: { type: 'integer', description: '排序' }
@@ -21,11 +22,11 @@ module.exports = fp(async (fastify, options) => {
       onRequest: options.getAuthenticate('label'),
       schema: {
         summary: '标签列表',
-        description: '传 accountId 时返回该邮箱专属标签和全局标签，不传返回全部',
+        description: '返回当前用户的标签，以及 level 为 0 的系统默认标签。传 accountId 时再限定该邮箱专属标签和共用标签',
         querystring: { type: 'object', properties: { accountId: { type: 'string', description: '邮箱账号 ID' } } }
       }
     },
-    async request => await services.label.list({ accountId: request.query.accountId })
+    async request => await services.label.list({ accountId: request.query.accountId, userId: userIdOf(request) })
   );
 
   fastify.post(
@@ -34,7 +35,7 @@ module.exports = fp(async (fastify, options) => {
       onRequest: options.getAuthenticate('label:manage'),
       schema: { summary: '新建标签', description: '新建标签', body: labelBody(['name']) }
     },
-    async request => await services.label.create(request.body)
+    async request => await services.label.create(Object.assign({}, request.body, { userId: userIdOf(request) }))
   );
 
   fastify.put(
@@ -43,7 +44,7 @@ module.exports = fp(async (fastify, options) => {
       onRequest: options.getAuthenticate('label:manage'),
       schema: { summary: '修改标签', description: '修改标签', params: idParams, body: labelBody() }
     },
-    async request => await services.label.save(Object.assign({}, request.body, { id: request.params.id }))
+    async request => await services.label.save(Object.assign({}, request.body, { id: request.params.id, userId: userIdOf(request) }))
   );
 
   fastify.delete(
@@ -53,7 +54,7 @@ module.exports = fp(async (fastify, options) => {
       schema: { summary: '删除标签', description: '删除标签并移除邮件上的该标签', params: idParams }
     },
     async request => {
-      await services.label.remove({ id: request.params.id });
+      await services.label.remove({ id: request.params.id, userId: userIdOf(request) });
       return {};
     }
   );
@@ -69,7 +70,7 @@ module.exports = fp(async (fastify, options) => {
       }
     },
     async request => {
-      await services.label.sort(request.body);
+      await services.label.sort(Object.assign({}, request.body, { userId: userIdOf(request) }));
       return {};
     }
   );

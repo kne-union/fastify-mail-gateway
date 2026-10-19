@@ -2,7 +2,15 @@ const fp = require('fastify-plugin');
 const fs = require('node:fs/promises');
 const path = require('node:path');
 const { createError } = require('../utils/error');
+const { ownedOrSystem, isSystemLevel, sameUser } = require('../utils/owner');
 const { renderTemplate, parseTemplateFile } = require('../utils/template');
+
+const requireUser = userId => {
+  if (userId == null || userId === '') {
+    throw createError('未登录', 401);
+  }
+  return userId;
+};
 
 const LEVEL_SYSTEM = 0;
 const LEVEL_CUSTOM = 1;
@@ -29,8 +37,12 @@ module.exports = fp(async (fastify, options) => {
   /**
    * 分类列表，附带每个分类下的模版数量；uncategorizedCount 为未分类模版数量
    */
-  const categoryList = async () => {
+  const readable = (row, userId) => isSystemLevel(row) || sameUser(row.userId, userId);
+
+  const categoryList = async ({ userId } = {}) => {
+    const ownerId = requireUser(userId);
     const categories = await models.templateCategory.findAll({
+      where: ownedOrSystem(ownerId, Op),
       order: [
         ['sort', 'ASC'],
         ['createdAt', 'ASC']
@@ -38,6 +50,7 @@ module.exports = fp(async (fastify, options) => {
     });
     const counts = await models.template.findAll({
       attributes: ['categoryId', [fastify.sequelize.instance.fn('COUNT', fastify.sequelize.instance.col('id')), 'count']],
+      where: ownedOrSystem(ownerId, Op),
       group: ['categoryId'],
       raw: true
     });
@@ -49,20 +62,20 @@ module.exports = fp(async (fastify, options) => {
     };
   };
 
-  const categoryDetail = async ({ id }) => {
+  const categoryDetail = async ({ id, userId }) => {
     const category = await models.templateCategory.findByPk(id);
-    if (!category) {
+    if (!category || !readable(category, requireUser(userId))) {
       throw createError('模版分类不存在', 404);
     }
     return category;
   };
 
-  const categoryCreate = async ({ name, description, sort }) => {
-    return await models.templateCategory.create({ name, description, sort: sort || 0, level: LEVEL_CUSTOM });
+  const categoryCreate = async ({ name, description, sort, userId }) => {
+    return await models.templateCategory.create({ name, description, sort: sort || 0, level: LEVEL_CUSTOM, userId: requireUser(userId) });
   };
 
-  const categorySave = async ({ id, ...data }) => {
-    const category = await categoryDetail({ id });
+  const categorySave = async ({ id, userId, ...data }) => {
+    const category = await categoryDetail({ id, userId });
     assertCustom(category, '系统默认分类不可修改');
     ['name', 'description', 'sort'].forEach(key => {
       if (data[key] !== undefined) {
@@ -76,37 +89,38 @@ module.exports = fp(async (fastify, options) => {
   /**
    * 删除分类，分类下的模版转为未分类
    */
-  const categoryRemove = async ({ id }) => {
-    const category = await categoryDetail({ id });
+  const categoryRemove = async ({ id, userId }) => {
+    const category = await categoryDetail({ id, userId });
     assertCustom(category, '系统默认分类不可删除');
-    await models.template.update({ categoryId: null }, { where: { categoryId: id } });
+    await models.template.update({ categoryId: null }, { where: { categoryId: id, userId } });
     await category.destroy();
   };
 
-  const categorySort = async ({ ids }) => {
+  const categorySort = async ({ ids, userId }) => {
+    const ownerId = requireUser(userId);
     for (let index = 0; index < ids.length; index++) {
-      await models.templateCategory.update({ sort: index }, { where: { id: ids[index] } });
+      await models.templateCategory.update({ sort: index }, { where: { id: ids[index], [Op.or]: [{ userId: ownerId }, { level: LEVEL_SYSTEM }] } });
     }
   };
 
   /**
    * 模版列表，filter.categoryId 传 'none' 查询未分类模版
    */
-  const list = async ({ filter = {}, perPage = 20, currentPage = 1 } = {}) => {
-    const where = {};
+  const list = async ({ filter = {}, perPage = 20, currentPage = 1, userId } = {}) => {
+    const where = { [Op.and]: [ownedOrSystem(requireUser(userId), Op)] };
     if (filter.categoryId === 'none') {
-      where.categoryId = null;
+      where[Op.and].push({ categoryId: null });
     } else if (filter.categoryId) {
-      where.categoryId = filter.categoryId;
+      where[Op.and].push({ categoryId: filter.categoryId });
     }
     if (filter.status) {
-      where.status = filter.status;
+      where[Op.and].push({ status: filter.status });
     }
     if (filter.level !== undefined && filter.level !== '') {
-      where.level = Number(filter.level);
+      where[Op.and].push({ level: Number(filter.level) });
     }
     if (filter.keyword) {
-      where[Op.or] = [{ name: { [Op.like]: `%${filter.keyword}%` } }, { subject: { [Op.like]: `%${filter.keyword}%` } }];
+      where[Op.and].push({ [Op.or]: [{ name: { [Op.like]: `%${filter.keyword}%` } }, { subject: { [Op.like]: `%${filter.keyword}%` } }] });
     }
     const { rows, count } = await models.template.findAndCountAll({
       where,
@@ -121,24 +135,25 @@ module.exports = fp(async (fastify, options) => {
     return { pageData: rows, totalCount: count };
   };
 
-  const detail = async ({ id }) => {
+  const detail = async ({ id, userId }) => {
     const template = await models.template.findByPk(id, {
       include: [{ model: models.templateCategory, as: 'category', attributes: ['id', 'name'] }]
     });
-    if (!template) {
+    if (!template || !readable(template, requireUser(userId))) {
       throw createError('邮件模版不存在', 404);
     }
     return template;
   };
 
-  const checkCategory = async categoryId => {
+  const checkCategory = async (categoryId, userId) => {
     if (categoryId) {
-      await categoryDetail({ id: categoryId });
+      await categoryDetail({ id: categoryId, userId });
     }
   };
 
-  const create = async ({ categoryId, name, subject, html, description, status, sort }) => {
-    await checkCategory(categoryId);
+  const create = async ({ categoryId, name, subject, html, description, status, sort, userId }) => {
+    const ownerId = requireUser(userId);
+    await checkCategory(categoryId, ownerId);
     return await models.template.create({
       categoryId: categoryId || null,
       name,
@@ -147,15 +162,16 @@ module.exports = fp(async (fastify, options) => {
       description,
       status: status || 'enabled',
       sort: sort || 0,
-      level: LEVEL_CUSTOM
+      level: LEVEL_CUSTOM,
+      userId: ownerId
     });
   };
 
-  const save = async ({ id, ...data }) => {
-    const template = await detail({ id });
+  const save = async ({ id, userId, ...data }) => {
+    const template = await detail({ id, userId });
     assertCustom(template, '系统默认模版不可修改，可复制后修改副本');
     if (data.categoryId !== undefined) {
-      await checkCategory(data.categoryId);
+      await checkCategory(data.categoryId, userId);
       template.categoryId = data.categoryId || null;
     }
     ['name', 'subject', 'html', 'description', 'status', 'sort'].forEach(key => {
@@ -167,23 +183,23 @@ module.exports = fp(async (fastify, options) => {
     return template;
   };
 
-  const setStatus = async ({ id, status }) => {
-    const template = await detail({ id });
+  const setStatus = async ({ id, status, userId }) => {
+    const template = await detail({ id, userId });
     template.status = status;
     await template.save();
     return template;
   };
 
-  const remove = async ({ id }) => {
-    const template = await detail({ id });
+  const remove = async ({ id, userId }) => {
+    const template = await detail({ id, userId });
     assertCustom(template, '系统默认模版不可删除，可停用');
     await template.destroy();
   };
 
-  const copy = async ({ id }) => {
-    const template = await detail({ id });
+  const copy = async ({ id, userId }) => {
+    const template = await detail({ id, userId });
     const { categoryId, name, subject, html, description, sort } = template.get({ plain: true });
-    return await models.template.create({ categoryId, name: `${name}（副本）`, subject, html, description, sort, status: 'disabled', level: LEVEL_CUSTOM });
+    return await models.template.create({ categoryId, name: `${name}（副本）`, subject, html, description, sort, status: 'disabled', level: LEVEL_CUSTOM, userId: requireUser(userId) });
   };
 
   const readEntries = async dir => {
@@ -205,7 +221,7 @@ module.exports = fp(async (fastify, options) => {
   };
 
   const upsertSystemCategory = async ({ code, name, description, sort }) => {
-    const category = await models.templateCategory.findOne({ where: { code, level: LEVEL_SYSTEM } });
+    const category = await models.templateCategory.findOne({ where: { code, level: LEVEL_SYSTEM, userId: null } });
     if (category) {
       Object.assign(category, { name, description });
       await category.save();
@@ -220,7 +236,7 @@ module.exports = fp(async (fastify, options) => {
     const { code, name } = parseCodeName(path.basename(file, path.extname(file)));
     const { subject, html, description } = parseTemplateFile(await fs.readFile(file, 'utf8'));
     const data = { name, subject, html, description, categoryId };
-    const template = await models.template.findOne({ where: { code, level: LEVEL_SYSTEM } });
+    const template = await models.template.findOne({ where: { code, level: LEVEL_SYSTEM, userId: null } });
     if (template) {
       Object.assign(template, data);
       await template.save();
@@ -277,16 +293,17 @@ module.exports = fp(async (fastify, options) => {
    * 渲染模版：mailId 提供 mail 变量（回复场景），accountId 提供 account 变量，data 为额外变量
    * 返回 { subject, html }；变量值在 html 中会被转义
    */
-  const render = async ({ id, template: inlineTemplate, mailId, accountId, data = {} }) => {
-    const target = inlineTemplate || (await detail({ id })).get({ plain: true });
+  const render = async ({ id, template: inlineTemplate, mailId, accountId, data = {}, userId }) => {
+    const ownerId = requireUser(userId);
+    const target = inlineTemplate || (await detail({ id, userId: ownerId })).get({ plain: true });
     const context = Object.assign({}, data);
     if (mailId) {
-      const mail = await services.mail.getInstance({ id: mailId });
+      const mail = await services.mail.getInstance({ id: mailId, userId: ownerId });
       context.mail = mail.get({ plain: true });
     }
     const targetAccountId = accountId || (context.mail && context.mail.accountId);
     if (targetAccountId) {
-      context.account = (await services.account.detail({ id: targetAccountId })).get({ plain: true });
+      context.account = (await services.account.detail({ id: targetAccountId, userId: ownerId })).get({ plain: true });
     }
     return {
       subject: renderTemplate(target.subject, context),

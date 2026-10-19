@@ -2,6 +2,14 @@ const fp = require('fastify-plugin');
 const { normalizeAddressList } = require('../utils/address');
 const { stripHtml } = require('../utils/condition');
 const { createError } = require('../utils/error');
+const { isSystemLevel, sameUser } = require('../utils/owner');
+
+const requireUser = userId => {
+  if (userId == null || userId === '') {
+    throw createError('未登录', 401);
+  }
+  return userId;
+};
 
 const SUMMARY_LENGTH = 120;
 
@@ -22,16 +30,37 @@ module.exports = fp(async (fastify, options) => {
     return Object.assign(plain, { summary });
   };
 
-  const getMailIdsByLabel = async labelId => {
+  const ownedAccountIds = async userId => {
+    const rows = await models.account.findAll({ where: { userId: requireUser(userId) }, attributes: ['id'], raw: true });
+    return rows.map(item => item.id);
+  };
+
+  const scopeAccounts = async ({ accountId, userId }) => {
+    const ids = await ownedAccountIds(userId);
+    if (accountId) {
+      if (!ids.map(String).includes(String(accountId))) {
+        throw createError('邮箱账号不存在', 404);
+      }
+      return accountId;
+    }
+    return ids;
+  };
+
+  const getMailIdsByLabel = async (labelId, userId) => {
+    const label = await models.label.findOne({ where: { id: labelId, [Op.or]: [{ userId }, { level: 0 }] } });
+    if (!label) {
+      return [];
+    }
     const rows = await models.mailLabel.findAll({ where: { labelId }, attributes: ['mailId'], raw: true });
     return rows.map(item => item.mailId);
   };
 
-  const list = async ({ filter = {}, perPage = 20, currentPage = 1 } = {}) => {
-    const where = { folder: filter.folder || 'inbox' };
-    if (filter.accountId) {
-      where.accountId = filter.accountId;
+  const list = async ({ filter = {}, perPage = 20, currentPage = 1, userId } = {}) => {
+    const scoped = await scopeAccounts({ accountId: filter.accountId, userId });
+    if (Array.isArray(scoped) && scoped.length === 0) {
+      return { pageData: [], totalCount: 0 };
     }
+    const where = { folder: filter.folder || 'inbox', accountId: Array.isArray(scoped) ? { [Op.in]: scoped } : scoped };
     if (filter.isRead != null && filter.isRead !== '') {
       where.isRead = filter.isRead === true || filter.isRead === 'true';
     }
@@ -44,7 +73,8 @@ module.exports = fp(async (fastify, options) => {
       where[Op.or] = [{ subject: { [op]: pattern } }, { text: { [op]: pattern } }, { html: { [op]: pattern } }];
     }
     if (filter.labelId) {
-      where.id = { [Op.in]: await getMailIdsByLabel(filter.labelId) };
+      const mailIds = await getMailIdsByLabel(filter.labelId, userId);
+      where.id = { [Op.in]: mailIds.length > 0 ? mailIds : ['0'] };
     }
     const { rows, count } = await models.mail.findAndCountAll({
       where,
@@ -61,16 +91,22 @@ module.exports = fp(async (fastify, options) => {
     return { pageData: rows.map(toListItem), totalCount: count };
   };
 
-  const getInstance = async ({ id }) => {
+  const getInstance = async ({ id, userId }) => {
     const mail = await models.mail.findByPk(id, { include: [labelInclude()] });
     if (!mail) {
       throw createError('邮件不存在', 404);
     }
+    if (userId != null && userId !== '') {
+      const account = await models.account.findOne({ where: { id: mail.accountId, userId } });
+      if (!account) {
+        throw createError('邮件不存在', 404);
+      }
+    }
     return mail;
   };
 
-  const detail = async ({ id, markRead = true }) => {
-    const mail = await getInstance({ id });
+  const detail = async ({ id, markRead = true, userId }) => {
+    const mail = await getInstance({ id, userId: requireUser(userId) });
     if (markRead && !mail.isRead) {
       mail.isRead = true;
       await mail.save();
@@ -78,34 +114,76 @@ module.exports = fp(async (fastify, options) => {
     return mail;
   };
 
-  const setRead = async ({ ids, isRead = true }) => {
+  const assertOwnedMails = async ({ ids, userId }) => {
+    const uniqueIds = [...new Set([].concat(ids || []).filter(Boolean).map(String))];
+    const list = uniqueIds.length === 0 ? [] : await models.mail.findAll({ where: { id: uniqueIds } });
+    if (list.length !== uniqueIds.length) {
+      throw createError('邮件不存在', 404);
+    }
+    const accountIds = [...new Set(list.map(item => String(item.accountId)))];
+    const owned = await models.account.findAll({ where: { id: accountIds, userId: requireUser(userId) }, attributes: ['id'], raw: true });
+    if (owned.length !== accountIds.length) {
+      throw createError('邮件不存在', 404);
+    }
+    return list;
+  };
+
+  const setRead = async ({ ids, isRead = true, userId }) => {
+    await assertOwnedMails({ ids, userId });
     await models.mail.update({ isRead }, { where: { id: ids } });
   };
 
-  const setStar = async ({ ids, isStarred = true }) => {
+  const setStar = async ({ ids, isStarred = true, userId }) => {
+    await assertOwnedMails({ ids, userId });
     await models.mail.update({ isStarred }, { where: { id: ids } });
   };
 
+  const allowedLabelIds = async ({ mail, labelIds }) => {
+    const account = await models.account.findByPk(mail.accountId);
+    const labels = await models.label.findAll({ where: { id: labelIds } });
+    return labels
+      .filter(label => {
+        const visible = isSystemLevel(label) || sameUser(label.userId, account && account.userId);
+        const accountOk = !label.accountId || String(label.accountId) === String(mail.accountId);
+        return visible && accountOk;
+      })
+      .map(label => String(label.id));
+  };
+
   const addLabels = async ({ id, labelIds }) => {
+    const mail = await models.mail.findByPk(id);
+    if (!mail) {
+      throw createError('邮件不存在', 404);
+    }
+    const allowed = await allowedLabelIds({ mail, labelIds });
     const exists = (await models.mailLabel.findAll({ where: { mailId: id }, attributes: ['labelId'], raw: true })).map(item => String(item.labelId));
-    const target = (labelIds || []).map(String).filter(labelId => !exists.includes(labelId));
+    const target = allowed.filter(labelId => !exists.includes(labelId));
     if (target.length > 0) {
       await models.mailLabel.bulkCreate(target.map(labelId => ({ mailId: id, labelId })));
     }
   };
 
   const removeLabels = async ({ id, labelIds }) => {
-    await models.mailLabel.destroy({ where: { mailId: id, labelId: labelIds } });
+    const mail = await models.mail.findByPk(id);
+    if (!mail) {
+      throw createError('邮件不存在', 404);
+    }
+    const allowed = await allowedLabelIds({ mail, labelIds });
+    if (allowed.length === 0) {
+      return;
+    }
+    await models.mailLabel.destroy({ where: { mailId: id, labelId: allowed } });
   };
 
-  const setLabels = async ({ id, labelIds = [] }) => {
-    await getInstance({ id });
+  const setLabels = async ({ id, labelIds = [], userId }) => {
+    const mail = await getInstance({ id, userId: requireUser(userId) });
     await models.mailLabel.destroy({ where: { mailId: id } });
     await addLabels({ id, labelIds });
-    return await getInstance({ id });
+    return await getInstance({ id, userId });
   };
 
-  const moveToTrash = async ({ ids }) => {
+  const moveToTrash = async ({ ids, userId }) => {
+    await assertOwnedMails({ ids, userId });
     const mails = await models.mail.findAll({ where: { id: ids, folder: { [Op.ne]: 'trash' } } });
     for (const mail of mails) {
       mail.originFolder = mail.folder;
@@ -114,7 +192,8 @@ module.exports = fp(async (fastify, options) => {
     }
   };
 
-  const restore = async ({ ids }) => {
+  const restore = async ({ ids, userId }) => {
+    await assertOwnedMails({ ids, userId });
     const mails = await models.mail.findAll({ where: { id: ids, folder: 'trash' } });
     for (const mail of mails) {
       mail.folder = mail.originFolder || 'inbox';
@@ -123,7 +202,8 @@ module.exports = fp(async (fastify, options) => {
     }
   };
 
-  const remove = async ({ ids }) => {
+  const remove = async ({ ids, userId }) => {
+    await assertOwnedMails({ ids, userId });
     await models.mailLabel.destroy({ where: { mailId: ids } });
     await models.mail.destroy({ where: { id: ids } });
   };
@@ -131,8 +211,15 @@ module.exports = fp(async (fastify, options) => {
   /**
    * 文件夹与标签的计数，供前端侧栏显示：标签只统计收件箱中的邮件
    */
-  const folderStats = async ({ accountId } = {}) => {
-    const base = accountId ? { accountId } : {};
+  const folderStats = async ({ accountId, userId } = {}) => {
+    const scoped = await scopeAccounts({ accountId, userId });
+    if (Array.isArray(scoped) && scoped.length === 0) {
+      return {
+        folders: { inbox: { total: 0, unread: 0 }, sent: { total: 0 }, draft: { total: 0 }, trash: { total: 0 } },
+        labels: []
+      };
+    }
+    const base = Array.isArray(scoped) ? { accountId: { [Op.in]: scoped } } : { accountId: scoped };
     const [inboxTotal, inboxUnread, sent, draft, trash] = await Promise.all([
       models.mail.count({ where: Object.assign({ folder: 'inbox' }, base) }),
       models.mail.count({ where: Object.assign({ folder: 'inbox', isRead: false }, base) }),
@@ -140,7 +227,7 @@ module.exports = fp(async (fastify, options) => {
       models.mail.count({ where: Object.assign({ folder: 'draft' }, base) }),
       models.mail.count({ where: Object.assign({ folder: 'trash' }, base) })
     ]);
-    const labels = await services.label.list({ accountId });
+    const labels = await services.label.list({ accountId, userId });
     const labelStats = await Promise.all(
       labels.map(async label => {
         const include = [{ model: models.mailLabel, as: 'mailLabels', where: { labelId: label.id }, attributes: [], required: true }];
@@ -175,16 +262,13 @@ module.exports = fp(async (fastify, options) => {
   /**
    * 收信附件按需下载：首次调用时从 IMAP 取回原邮件、上传到文件存储并记录文件 id，之后直接返回已保存的附件
    */
-  const downloadAttachment = async ({ id, index }) => {
+  const downloadAttachment = async ({ id, index, userId }) => {
     const key = `${id}:${index}`;
     if (pendingDownloads.has(key)) {
       return await pendingDownloads.get(key);
     }
     const task = (async () => {
-      const mail = await models.mail.findByPk(id);
-      if (!mail) {
-        throw createError('邮件不存在', 404);
-      }
+      const mail = await getInstance({ id, userId: requireUser(userId) });
       const attachment = (mail.attachments || [])[index];
       if (!attachment) {
         throw createError('附件不存在', 404);
@@ -226,11 +310,11 @@ module.exports = fp(async (fastify, options) => {
   };
 
   // 转发 / 回复时引用的收信附件可能还没下载过：传 { mailId, index } 的附件先下载再发送
-  const prepareAttachments = async attachments => {
+  const prepareAttachments = async (attachments, userId) => {
     const result = [];
     for (const attachment of attachments || []) {
       if (!isAttachmentReady(attachment) && attachment.mailId != null && attachment.index != null) {
-        result.push(await downloadAttachment({ id: attachment.mailId, index: Number(attachment.index) }));
+        result.push(await downloadAttachment({ id: attachment.mailId, index: Number(attachment.index), userId }));
       } else {
         result.push(attachment);
       }
@@ -262,8 +346,8 @@ module.exports = fp(async (fastify, options) => {
    * 发送邮件：beforeSend 钩子 → SMTP 发送 → 存入已发送 → 发信规则 → afterSend 钩子
    * 传 draftId 时把草稿转为已发送；skipRules 用于自动回复/转发等规则内发信，避免规则循环触发
    */
-  const send = async ({ accountId, to, cc, bcc, subject, html, text, attachments = [], inReplyTo, references, headers, draftId, skipRules = false }) => {
-    const account = await services.account.getWithPassword({ id: accountId });
+  const send = async ({ accountId, to, cc, bcc, subject, html, text, attachments = [], inReplyTo, references, headers, draftId, skipRules = false, userId }) => {
+    const account = await services.account.getWithPassword({ id: accountId, userId });
     if (account.status !== 'enabled') {
       throw createError('邮箱账号已停用，无法发送邮件');
     }
@@ -274,7 +358,7 @@ module.exports = fp(async (fastify, options) => {
     const ccList = normalizeAddressList(cc);
     const bccList = normalizeAddressList(bcc);
     const referenceList = buildReferences(references, inReplyTo);
-    attachments = await prepareAttachments(attachments);
+    attachments = await prepareAttachments(attachments, userId);
     let mailOptions = {
       from: { name: account.name, address: account.address },
       to: toList,
@@ -327,7 +411,10 @@ module.exports = fp(async (fastify, options) => {
     };
 
     let mail;
-    const draft = draftId ? await models.mail.findOne({ where: { id: draftId, folder: 'draft' } }) : null;
+    const draft = draftId ? await models.mail.findOne({ where: { id: draftId, folder: 'draft', accountId: account.id } }) : null;
+    if (draftId && !draft) {
+      throw createError('草稿不存在', 404);
+    }
     if (draft) {
       await draft.update(record);
       mail = draft;

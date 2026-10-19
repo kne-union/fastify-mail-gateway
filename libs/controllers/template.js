@@ -1,5 +1,6 @@
 const fp = require('fastify-plugin');
 const { idParams, pageQuery, statusBody } = require('../utils/schema');
+const { userIdOf } = require('../utils/owner');
 
 const categoryBody = (required = []) => ({
   type: 'object',
@@ -34,7 +35,7 @@ module.exports = fp(async (fastify, options) => {
       onRequest: options.getAuthenticate('template'),
       schema: { summary: '模版分类列表', description: '返回全部分类及各分类下的模版数量，uncategorizedCount 为未分类模版数量' }
     },
-    async () => await services.template.categoryList()
+    async request => await services.template.categoryList({ userId: userIdOf(request) })
   );
 
   fastify.post(
@@ -43,7 +44,7 @@ module.exports = fp(async (fastify, options) => {
       onRequest: options.getAuthenticate('template:manage'),
       schema: { summary: '新建模版分类', description: '新建模版分类', body: categoryBody(['name']) }
     },
-    async request => await services.template.categoryCreate(request.body)
+    async request => await services.template.categoryCreate(Object.assign({}, request.body, { userId: userIdOf(request) }))
   );
 
   fastify.post(
@@ -57,7 +58,7 @@ module.exports = fp(async (fastify, options) => {
       }
     },
     async request => {
-      await services.template.categorySort(request.body);
+      await services.template.categorySort(Object.assign({}, request.body, { userId: userIdOf(request) }));
       return {};
     }
   );
@@ -68,7 +69,7 @@ module.exports = fp(async (fastify, options) => {
       onRequest: options.getAuthenticate('template:manage'),
       schema: { summary: '修改模版分类', description: '修改模版分类，系统默认分类不可修改（403）', params: idParams, body: categoryBody() }
     },
-    async request => await services.template.categorySave(Object.assign({}, request.body, { id: request.params.id }))
+    async request => await services.template.categorySave(Object.assign({}, request.body, { id: request.params.id, userId: userIdOf(request) }))
   );
 
   fastify.delete(
@@ -78,7 +79,7 @@ module.exports = fp(async (fastify, options) => {
       schema: { summary: '删除模版分类', description: '删除分类，分类下的模版转为未分类；系统默认分类不可删除（403）', params: idParams }
     },
     async request => {
-      await services.template.categoryRemove({ id: request.params.id });
+      await services.template.categoryRemove({ id: request.params.id, userId: userIdOf(request) });
       return {};
     }
   );
@@ -98,7 +99,7 @@ module.exports = fp(async (fastify, options) => {
         })
       }
     },
-    async request => await services.template.list(request.query)
+    async request => await services.template.list(Object.assign({}, request.query, { userId: userIdOf(request) }))
   );
 
   fastify.post(
@@ -124,7 +125,7 @@ module.exports = fp(async (fastify, options) => {
         }
       }
     },
-    async request => await services.template.render(request.body)
+    async request => await services.template.render(Object.assign({}, request.body, { userId: userIdOf(request) }))
   );
 
   fastify.get(
@@ -133,7 +134,7 @@ module.exports = fp(async (fastify, options) => {
       onRequest: options.getAuthenticate('template'),
       schema: { summary: '邮件模版详情', description: '邮件模版详情', params: idParams }
     },
-    async request => await services.template.detail({ id: request.params.id })
+    async request => await services.template.detail({ id: request.params.id, userId: userIdOf(request) })
   );
 
   fastify.post(
@@ -142,7 +143,7 @@ module.exports = fp(async (fastify, options) => {
       onRequest: options.getAuthenticate('template:manage'),
       schema: { summary: '新建邮件模版', description: '新建邮件模版', body: templateBody(['name']) }
     },
-    async request => await services.template.create(request.body)
+    async request => await services.template.create(Object.assign({}, request.body, { userId: userIdOf(request) }))
   );
 
   fastify.put(
@@ -151,7 +152,7 @@ module.exports = fp(async (fastify, options) => {
       onRequest: options.getAuthenticate('template:manage'),
       schema: { summary: '修改邮件模版', description: '修改邮件模版，系统默认模版不可修改（403），可复制后修改副本', params: idParams, body: templateBody() }
     },
-    async request => await services.template.save(Object.assign({}, request.body, { id: request.params.id }))
+    async request => await services.template.save(Object.assign({}, request.body, { id: request.params.id, userId: userIdOf(request) }))
   );
 
   fastify.post(
@@ -160,7 +161,7 @@ module.exports = fp(async (fastify, options) => {
       onRequest: options.getAuthenticate('template:manage'),
       schema: { summary: '启用/停用邮件模版', description: '停用后写信与规则中不可选', params: idParams, body: statusBody }
     },
-    async request => await services.template.setStatus({ id: request.params.id, status: request.body.status })
+    async request => await services.template.setStatus({ id: request.params.id, status: request.body.status, userId: userIdOf(request) })
   );
 
   fastify.post(
@@ -169,7 +170,7 @@ module.exports = fp(async (fastify, options) => {
       onRequest: options.getAuthenticate('template:manage'),
       schema: { summary: '复制邮件模版', description: '复制为停用状态的自定义模版副本', params: idParams }
     },
-    async request => await services.template.copy({ id: request.params.id })
+    async request => await services.template.copy({ id: request.params.id, userId: userIdOf(request) })
   );
 
   fastify.delete(
@@ -179,7 +180,7 @@ module.exports = fp(async (fastify, options) => {
       schema: { summary: '删除邮件模版', description: '删除邮件模版，系统默认模版不可删除（403）', params: idParams }
     },
     async request => {
-      await services.template.remove({ id: request.params.id });
+      await services.template.remove({ id: request.params.id, userId: userIdOf(request) });
       return {};
     }
   );

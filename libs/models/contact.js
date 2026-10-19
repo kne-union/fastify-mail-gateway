@@ -1,4 +1,4 @@
-module.exports = ({ DataTypes }) => {
+module.exports = ({ DataTypes, options }) => {
   return {
     model: {
       name: {
@@ -8,7 +8,7 @@ module.exports = ({ DataTypes }) => {
       address: {
         type: DataTypes.STRING,
         allowNull: false,
-        comment: '邮箱地址，统一存小写，不可重复'
+        comment: '邮箱地址，统一存小写，同一用户下不可重复'
       },
       avatar: {
         type: DataTypes.STRING,
@@ -19,9 +19,17 @@ module.exports = ({ DataTypes }) => {
         comment: '备注'
       }
     },
+    associate: ({ contact }) => {
+      contact.belongsTo(options.getUserModel(), {
+        foreignKey: 'userId',
+        as: 'user',
+        constraints: false,
+        comment: '所属用户'
+      });
+    },
     options: {
-      comment: '邮件联系人',
-      indexes: [{ fields: ['address'] }]
+      comment: '邮件联系人，按用户隔离',
+      indexes: [{ fields: ['user_id'] }, { fields: ['user_id', 'address'] }]
     }
   };
 };
