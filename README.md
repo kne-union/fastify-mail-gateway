@@ -630,7 +630,7 @@ templates/
 | password | string | 加密后的密码，默认 scope 不查询 |
 | imap / smtp | object | `{ host, port, secure }` |
 | status | string | `enabled` / `disabled` |
-| isDefault | boolean | 是否为该用户的默认邮箱；用户添加的第一个邮箱自动设为默认，删除默认邮箱后由最早添加的邮箱接替 |
+| isDefault | boolean | 是否为该用户的默认邮箱；用户添加的第一个邮箱自动设为默认，删除默认邮箱后由最早添加的邮箱接替；启动时为缺列的存量表补列，没有默认邮箱的用户由最早添加的邮箱接替 |
 | syncState | object | `{ uidValidity, lastUid }` |
 | lastSyncAt | Date | 最后同步时间 |
 | lastError | string | 最后同步错误 |

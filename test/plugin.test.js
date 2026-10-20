@@ -144,6 +144,17 @@ describe('@kne/fastify-mail-gateway', function () {
       const rest = await inject('GET', '/accounts');
       expect(rest.pageData.filter(item => item.isDefault).map(item => item.id)).to.deep.equal([first.id]);
     });
+
+    it('should add is_default to legacy tables and default the earliest account on prepare', async () => {
+      const first = await createAccount();
+      await createAccount({ name: '财务部', address: 'finance@example.com', username: 'finance@example.com' });
+      const { models, services } = fastify.mailGateway;
+      const queryInterface = models.account.sequelize.getQueryInterface();
+      await queryInterface.removeColumn(models.account.getTableName(), 'is_default');
+      await services.ownership.prepare();
+      const list = await inject('GET', '/accounts');
+      expect(list.pageData.filter(item => item.isDefault).map(item => item.id)).to.deep.equal([first.id]);
+    });
   });
 
   describe('收信同步', () => {
