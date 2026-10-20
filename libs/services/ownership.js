@@ -26,6 +26,31 @@ module.exports = fp(async (fastify, options) => {
     fastify.log.info(`[fastify-mail-gateway] ${table} 补齐列 user_id`);
   };
 
+  const ensureDefaultColumn = async () => {
+    const queryInterface = models.account.sequelize.getQueryInterface();
+    const { table, schema } = tableOf(models.account);
+    const describe = await queryInterface.describeTable(table, schema ? { schema } : undefined);
+    if (describe.is_default || describe.isDefault) {
+      return;
+    }
+    await queryInterface.addColumn(table, 'is_default', { type: DataTypes.BOOLEAN, defaultValue: false }, schema ? { schema } : undefined);
+    fastify.log.info(`[fastify-mail-gateway] ${table} 补齐列 is_default`);
+  };
+
+  const backfillDefault = async () => {
+    const { owners } = await accountUserMap();
+    for (const userId of owners) {
+      if ((await models.account.count({ where: { userId, isDefault: true } })) > 0) {
+        continue;
+      }
+      const first = await models.account.findOne({ where: { userId }, order: [['createdAt', 'ASC']] });
+      if (first) {
+        first.isDefault = true;
+        await first.save();
+      }
+    }
+  };
+
   const accountUserMap = async () => {
     const accounts = await models.account.findAll({ attributes: ['id', 'userId'], raw: true });
     const byAccount = new Map();
@@ -177,8 +202,10 @@ module.exports = fp(async (fastify, options) => {
         await ensureUserColumn(models[name]);
       }
     }
+    await ensureDefaultColumn();
     await backfill();
+    await backfillDefault();
   };
 
-  fastify[options.name].services.ownership = { prepare, ensureUserColumn, backfill };
+  fastify[options.name].services.ownership = { prepare, ensureUserColumn, backfill, backfillDefault };
 });

@@ -34,6 +34,11 @@ module.exports = ({ DataTypes, options }) => {
         defaultValue: 'enabled',
         comment: '状态：enabled 启用，disabled 停用（停用后不再同步和发信）'
       },
+      isDefault: {
+        type: DataTypes.BOOLEAN,
+        defaultValue: false,
+        comment: '是否为该用户的默认邮箱，每个用户最多一个'
+      },
       syncState: {
         type: DataTypes.JSON,
         defaultValue: {},

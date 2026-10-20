@@ -135,7 +135,10 @@ module.exports = fp(async (fastify, options) => {
       where,
       offset: perPage * (currentPage - 1),
       limit: perPage,
-      order: [['createdAt', 'DESC']]
+      order: [
+        ['isDefault', 'DESC'],
+        ['createdAt', 'DESC']
+      ]
     });
     return { pageData: rows, totalCount: count };
   };
@@ -145,6 +148,7 @@ module.exports = fp(async (fastify, options) => {
     if (!skipVerify) {
       await assertConnection({ username, password, imap, smtp });
     }
+    const existing = await models.account.count({ where: { userId } });
     const account = await models.account.create({
       name,
       address,
@@ -152,6 +156,7 @@ module.exports = fp(async (fastify, options) => {
       password: encrypt(password, options.secretKey),
       imap,
       smtp,
+      isDefault: existing === 0,
       userId
     });
     return await detail({ id: account.id, userId });
@@ -198,6 +203,23 @@ module.exports = fp(async (fastify, options) => {
     await models.mail.destroy({ where: { accountId: id } });
     await models.label.destroy({ where: { accountId: id } });
     await account.destroy();
+    if (account.isDefault) {
+      const next = await models.account.findOne({ where: { userId }, order: [['createdAt', 'ASC']] });
+      if (next) {
+        next.isDefault = true;
+        await next.save();
+      }
+    }
+  };
+
+  const setDefault = async ({ id, userId }) => {
+    const account = await detail({ id, userId: requireUser(userId) });
+    await models.account.sequelize.transaction(async transaction => {
+      await models.account.update({ isDefault: false }, { where: { userId, id: { [Op.ne]: id } }, transaction });
+      account.isDefault = true;
+      await account.save({ transaction });
+    });
+    return account;
   };
 
   services.account = {
@@ -206,6 +228,7 @@ module.exports = fp(async (fastify, options) => {
     create,
     save,
     setStatus,
+    setDefault,
     remove,
     testConnection,
     getWithPassword,

@@ -127,6 +127,34 @@ describe('@kne/fastify-mail-gateway', function () {
       await inject('DELETE', `/accounts/${account.id}`);
       expect((await inject('GET', '/accounts')).totalCount).to.equal(0);
     });
+
+    it('should make the first account default, switch default and reassign it on remove', async () => {
+      const first = await createAccount();
+      const second = await createAccount({ name: '财务部', address: 'finance@example.com', username: 'finance@example.com' });
+      const third = await createAccount({ name: '人事部', address: 'hr@example.com', username: 'hr@example.com' });
+      expect(first.isDefault).to.equal(true);
+      expect(second.isDefault).to.equal(false);
+
+      await inject('POST', `/accounts/${third.id}/default`);
+      const list = await inject('GET', '/accounts');
+      expect(list.pageData[0].id).to.equal(third.id);
+      expect(list.pageData.filter(item => item.isDefault).map(item => item.id)).to.deep.equal([third.id]);
+
+      await inject('DELETE', `/accounts/${third.id}`);
+      const rest = await inject('GET', '/accounts');
+      expect(rest.pageData.filter(item => item.isDefault).map(item => item.id)).to.deep.equal([first.id]);
+    });
+
+    it('should add is_default to legacy tables and default the earliest account on prepare', async () => {
+      const first = await createAccount();
+      await createAccount({ name: '财务部', address: 'finance@example.com', username: 'finance@example.com' });
+      const { models, services } = fastify.mailGateway;
+      const queryInterface = models.account.sequelize.getQueryInterface();
+      await queryInterface.removeColumn(models.account.getTableName(), 'is_default');
+      await services.ownership.prepare();
+      const list = await inject('GET', '/accounts');
+      expect(list.pageData.filter(item => item.isDefault).map(item => item.id)).to.deep.equal([first.id]);
+    });
   });
 
   describe('收信同步', () => {
@@ -1009,6 +1037,7 @@ describe('@kne/fastify-mail-gateway', function () {
 
       const draft = await asUser('1', 'POST', '/drafts', { accountId: account.id, to: 'a@x.com', subject: '草稿', html: '<p>secret</p>' });
       const otherAccount = await asUser('2', 'POST', '/accounts', accountPayload({ address: 'other-user@test.local', username: 'other-user@test.local' }));
+      expect(otherAccount.isDefault).to.equal(true);
       const stolen = await asUser('2', 'POST', '/mails/send', { accountId: otherAccount.id, to: 'a@x.com', subject: 'x', html: 'x', draftId: draft.id }).catch(e => e);
       expect(stolen.statusCode).to.equal(404);
       const hiddenMail = await asUser('2', 'GET', `/mails/${draft.id}`).catch(e => e);
