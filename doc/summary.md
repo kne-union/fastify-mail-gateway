@@ -92,7 +92,7 @@
 | 邮箱托管 | 添加时校验 IMAP/SMTP 连通性；密码 AES-256-GCM 加密存储，接口永不返回 |
 | 增量同步 | cron 定时同步所有启用邮箱，也可手动立即同步；历史邮件用 sync-history 异步分批拉取；并发保护，同一邮箱不会同时同步 |
 | 邮件管理 | 收件箱 / 已发送 / 草稿 / 回收站，已读、星标、标签、回收站恢复、彻底删除 |
-| 标签文件夹 | 邮箱专属标签 + 全局标签，提供各文件夹和标签的总数 / 未读数 |
+| 标签文件夹 | 邮箱专属标签 + 全局标签，提供各文件夹和标签的总数 / 未读数；可配置 `defaultLabels` 启动载入系统默认全局标签 |
 | 草稿 | 保存、更新、发送草稿，发送后草稿转为已发送 |
 | 回复链 | 回复时自动维护 `In-Reply-To` 与 `References` |
 | 规则中间件 | 条件 + 动作，支持试运行（只判断是否命中，不执行动作）和执行日志 |
@@ -117,6 +117,11 @@ fastify.register(require('@kne/fastify-mail-gateway'), {
   secretKey: process.env.MAIL_GATEWAY_SECRET_KEY,
   // 系统默认模版目录，启动时载入
   templateDir: path.resolve(__dirname, './templates'),
+  // 系统默认全局标签，启动时按 code 载入 / 覆盖（不可修改、删除）
+  defaultLabels: [
+    { code: 'important', name: '重要', color: '#f5222d' },
+    { code: 'todo', name: '待办', color: '#fa8c16' }
+  ],
   // 宿主注册扩展条件：如由 AI 判断邮件意图
   conditions: {
     aiJudge: {

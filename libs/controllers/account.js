@@ -102,6 +102,15 @@ module.exports = fp(async (fastify, options) => {
   );
 
   fastify.post(
+    `${options.prefix}/accounts/:id/default`,
+    {
+      onRequest: options.getAuthenticate('account:manage'),
+      schema: { summary: '设为默认邮箱', description: '把该邮箱设为当前用户的默认邮箱，同一用户的其它邮箱取消默认', params: idParams }
+    },
+    async request => await services.account.setDefault({ id: request.params.id, userId: userIdOf(request) })
+  );
+
+  fastify.post(
     `${options.prefix}/accounts/test-connection`,
     {
       onRequest: options.getAuthenticate('account:manage'),

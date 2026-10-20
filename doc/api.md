@@ -51,6 +51,7 @@
 | `PUT /accounts/{id}` | 修改账号，`password` 不传表示不修改；连接配置变化时重新校验 |
 | `DELETE /accounts/{id}` | 删除账号及其邮件、专属标签 |
 | `POST /accounts/{id}/status` | 启停，body：`{ status: 'enabled' \| 'disabled' }` |
+| `POST /accounts/{id}/default` | 设为当前用户的默认邮箱，其它邮箱取消默认 |
 | `POST /accounts/test-connection` | 测试连接；传 `id` 时未填写的字段使用已保存配置 |
 | `POST /accounts/{id}/sync` | 立即同步新邮件，返回 `{ skipped, count, hasMore }`；首次仅拉最新一批 |
 | `POST /accounts/{id}/sync-history` | 异步拉取历史邮件：`{ limit? }`（0/空=全部），立即返回 `{ started, skipped?, history }`，进度在 `syncState.history` |
@@ -434,6 +435,7 @@ templates/
 | password | string | 加密后的密码，默认 scope 不查询 |
 | imap / smtp | object | `{ host, port, secure }` |
 | status | string | `enabled` / `disabled` |
+| isDefault | boolean | 是否为该用户的默认邮箱；用户添加的第一个邮箱自动设为默认，删除默认邮箱后由最早添加的邮箱接替 |
 | syncState | object | `{ uidValidity, lastUid }` |
 | lastSyncAt | Date | 最后同步时间 |
 | lastError | string | 最后同步错误 |
