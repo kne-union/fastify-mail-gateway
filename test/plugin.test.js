@@ -747,6 +747,165 @@ describe('@kne/fastify-mail-gateway', function () {
     });
   });
 
+  describe('发信前规则', () => {
+    let account;
+    let calls;
+
+    const send = body => inject('POST', '/mails/send', Object.assign({ accountId: account.id, to: '客户 <customer@example.com>', subject: 'hello', html: '<p>正文</p>' }, body));
+
+    const expectRejected = async (promise, pattern) => {
+      try {
+        await promise;
+        expect.fail('should reject');
+      } catch (e) {
+        expect(e.statusCode, e.message).to.equal(400);
+        expect(e.message).to.match(pattern);
+      }
+    };
+
+    beforeEach(async () => {
+      calls = [];
+      fastify = await createFastify({
+        actions: {
+          inspect: {
+            label: '检查',
+            directions: ['beforeSend'],
+            handler: async ({ mail, direction }) => {
+              calls.push({ subject: mail.subject, id: mail.id, direction });
+            }
+          },
+          legacy: async () => 'ok',
+          beforeBroken: {
+            label: '检查失败',
+            directions: ['beforeSend'],
+            handler: async () => {
+              throw new Error('审核服务不可用');
+            }
+          }
+        }
+      });
+      account = await createAccount();
+    });
+
+    it('should only offer actions that declare beforeSend', async () => {
+      const actions = (await inject('GET', '/actions?direction=beforeSend')).map(item => item.type);
+      expect(actions).to.include.members(['blockSend', 'modifySubject', 'appendContent', 'addRecipients', 'webhook', 'inspect']);
+      expect(actions).to.not.include.members(['addLabel', 'star', 'moveToTrash', 'forward', 'markRead', 'autoReply', 'legacy']);
+      expect((await inject('GET', '/actions?direction=send')).map(item => item.type)).to.not.include.members(['blockSend', 'modifySubject']);
+      await expectRejected(inject('POST', '/rules', { name: 'x', direction: 'beforeSend', actions: [{ type: 'addLabel', params: { labelIds: ['1'] } }] }), /不支持/);
+      await expectRejected(inject('POST', '/rules', { name: 'x', direction: 'beforeSend', actions: [{ type: 'modifySubject', params: {} }] }), /前缀或后缀/);
+    });
+
+    it('should modify subject, body and recipients before sending', async () => {
+      await inject('POST', '/rules', {
+        name: '外发规范',
+        direction: 'beforeSend',
+        actions: [
+          { type: 'modifySubject', params: { prefix: '[{{account.name}}] ' } },
+          { type: 'appendContent', params: { html: '<p>免责声明</p>' } },
+          { type: 'addRecipients', params: { cc: ['customer@example.com'], bcc: ['审计 <audit@example.com>'] } },
+          { type: 'inspect' }
+        ]
+      });
+      const mail = await send();
+      const sent = fastify.testContext.sentMails[0];
+      expect(sent.subject).to.equal('[测试邮箱] hello');
+      expect(sent.html).to.equal('<p>正文</p><p>免责声明</p>');
+      expect(sent.text).to.include('免责声明');
+      expect(sent.cc).to.deep.equal([]);
+      expect(sent.bcc).to.deep.equal([{ name: '审计', address: 'audit@example.com' }]);
+      expect(calls).to.deep.equal([{ subject: '[测试邮箱] hello', id: null, direction: 'beforeSend' }]);
+      expect(mail.subject).to.equal('[测试邮箱] hello');
+      expect(mail.bcc.map(item => item.address)).to.deep.equal(['audit@example.com']);
+
+      const logs = await inject('GET', '/rule-logs?filter[direction]=beforeSend');
+      expect(logs.totalCount).to.equal(1);
+      expect(logs.pageData[0].mailId).to.equal(mail.id);
+
+      await send({ subject: '[测试邮箱] 已有前缀' });
+      expect(fastify.testContext.sentMails[1].subject).to.equal('[测试邮箱] 已有前缀');
+    });
+
+    it('should block matched mails, keep drafts and allow combining other actions', async () => {
+      await inject('POST', '/rules', {
+        name: '机密拦截',
+        direction: 'beforeSend',
+        conditions: { items: [{ field: 'subject', operator: 'contains', value: '机密' }] },
+        actions: [{ type: 'inspect' }, { type: 'blockSend', params: { message: '机密邮件不允许外发' } }]
+      });
+      await expectRejected(send({ subject: '机密报价' }), /被规则「机密拦截」拦截：机密邮件不允许外发/);
+      expect(calls).to.have.length(1);
+
+      const draft = await inject('POST', '/drafts', { accountId: account.id, to: 'a@x.com', subject: '机密草稿' });
+      await expectRejected(inject('POST', `/drafts/${draft.id}/send`, {}), /拦截/);
+      expect((await inject('GET', `/mails/${draft.id}`)).folder).to.equal('draft');
+
+      expect(fastify.testContext.sentMails).to.have.length(0);
+      expect((await inject('GET', `/mails/stats?accountId=${account.id}`)).folders.sent.total).to.equal(0);
+      const logs = await inject('GET', '/rule-logs?filter[direction]=beforeSend');
+      expect(logs.totalCount).to.equal(2);
+      const blockedLog = logs.pageData.find(item => item.mailId == null);
+      expect(blockedLog.results[1].output).to.include({ block: '机密邮件不允许外发', subject: '机密报价' });
+
+      await send({ subject: '普通邮件' });
+      expect(fastify.testContext.sentMails).to.have.length(1);
+    });
+
+    it('should not send when a beforeSend action fails', async () => {
+      await inject('POST', '/rules', {
+        name: '内容审核',
+        direction: 'beforeSend',
+        actions: [{ type: 'beforeBroken' }, { type: 'inspect' }]
+      });
+      await expectRejected(send(), /内容审核.*检查失败.*审核服务不可用/);
+      expect(calls, 'later actions should not run').to.have.length(0);
+      expect(fastify.testContext.sentMails).to.have.length(0);
+      expect((await inject('GET', '/rule-logs')).pageData[0].status).to.equal('failed');
+    });
+
+    it('should let webhook modify or block mails before sending', async () => {
+      let decision = { mail: { subject: '已审核' } };
+      const received = [];
+      const server = http.createServer((req, res) => {
+        let body = '';
+        req.on('data', chunk => (body += chunk));
+        req.on('end', () => {
+          received.push(JSON.parse(body));
+          res.setHeader('Content-Type', 'application/json');
+          res.end(JSON.stringify(decision));
+        });
+      });
+      await new Promise(resolve => server.listen(0, resolve));
+      try {
+        await inject('POST', '/rules', {
+          name: '外部审核',
+          direction: 'beforeSend',
+          actions: [{ type: 'webhook', params: { url: `http://127.0.0.1:${server.address().port}/review` } }]
+        });
+        await send();
+        expect(received[0].event).to.equal('beforeSend');
+        expect(received[0].mail.subject).to.equal('hello');
+        expect(fastify.testContext.sentMails[0].subject).to.equal('已审核');
+
+        decision = { block: '包含敏感词' };
+        await expectRejected(send(), /包含敏感词/);
+        expect(fastify.testContext.sentMails).to.have.length(1);
+      } finally {
+        server.close();
+      }
+    });
+
+    it('should skip beforeSend rules for rule-triggered mails and reject manual execution', async () => {
+      const rule = await inject('POST', '/rules', { name: '全部拦截', direction: 'beforeSend', actions: [{ type: 'blockSend' }] });
+      await fastify.mailGateway.services.mail.send({ accountId: account.id, to: 'a@x.com', subject: 'auto', html: 'x', skipRules: true, userId: '1' });
+      expect(fastify.testContext.sentMails).to.have.length(1);
+      const sentMail = (await inject('GET', '/mails?filter[folder]=sent')).pageData[0];
+      await expectRejected(inject('POST', `/rules/${rule.id}/execute`, { mailId: sentMail.id }), /不支持手动执行/);
+      const tested = await inject('POST', '/rules/test', { id: rule.id, mailId: sentMail.id });
+      expect(tested.matched).to.equal(true);
+    });
+  });
+
   describe('邮件模版', () => {
     beforeEach(async () => {
       fastify = await createFastify();

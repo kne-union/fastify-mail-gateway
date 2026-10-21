@@ -1,8 +1,7 @@
 const fp = require('fastify-plugin');
 const { createError } = require('../utils/error');
 const { createFormSchema, normalizeFormSchema, collectFields, isRequiredField, getPathValue } = require('../utils/form-schema');
-
-const DIRECTIONS = ['receive', 'send'];
+const { DIRECTIONS, DEFAULT_DIRECTIONS } = require('../utils/direction');
 
 module.exports = fp(async (fastify, options) => {
   const { models, services } = fastify[options.name];
@@ -15,7 +14,10 @@ module.exports = fp(async (fastify, options) => {
    *   formSchema: 可选，@kne/form-creator 搭建 Schema，前端用 SchemaRendererInner 渲染参数表单，字段值即 params；
    *     字段 rule 含 REQ 时保存与执行前校验必填，默认值写在字段 props.defaultValue
    *   validate: 可选，(params) => void，参数之间存在依赖时抛错
+   *   directions: 可选，默认 ['receive', 'send']；发信前（beforeSend）需显式声明
    *   handler: async ({ mail, account, params, rule, direction, fastify, services, models, log }) => output
+   *     beforeSend 时 output 可带 { mail: { subject, html, text, to, cc, bcc, headers } } 修改待发送邮件，
+   *     或 { block: true | '拦截原因' } 拦截发送；后续动作拿到的是已修改的邮件
    */
   const register = (type, action) => {
     if (!type || typeof type !== 'string') {
@@ -25,7 +27,7 @@ module.exports = fp(async (fastify, options) => {
     if (typeof target.handler !== 'function') {
       throw new Error(`动作 ${type} 缺少 handler`);
     }
-    const directions = (target.directions || DIRECTIONS).filter(item => DIRECTIONS.includes(item));
+    const directions = (target.directions || DEFAULT_DIRECTIONS).filter(item => DIRECTIONS.includes(item));
     if (target.formSchema != null && (typeof target.formSchema !== 'object' || !(Array.isArray(target.formSchema.blocks) || Array.isArray(target.formSchema.list)))) {
       throw new Error(`动作 ${type} 的 formSchema 须为包含 blocks 的 form-creator Schema`);
     }

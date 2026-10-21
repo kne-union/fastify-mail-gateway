@@ -252,13 +252,14 @@
 | `mail.list(...)` / `mail.detail({ id, markRead })` | 邮件列表 / 详情 |
 | `mail.downloadAttachment({ id, index })` | 按需下载收信附件并保存，已下载直接返回；同一附件并发调用只下载一次 |
 | `sync.fetchMessage({ account, uid, messageId })` | 从收件箱重新拉取并解析一封邮件 |
-| `mail.send({ accountId, to, cc, bcc, subject, html, attachments, inReplyTo, references, headers, skipRules })` | 发送邮件；`skipRules` 为 true 时不执行发信规则 |
+| `mail.send({ accountId, to, cc, bcc, subject, html, attachments, inReplyTo, references, headers, skipRules })` | 发送邮件；`skipRules` 为 true 时不执行发信前 / 发信后规则 |
 | `mail.addLabels({ id, labelIds })` / `mail.setLabels({ id, labelIds })` | 追加 / 覆盖标签 |
 | `mail.folderStats({ accountId })` | 文件夹与标签计数 |
 | `draft.save(data)` / `draft.send({ id })` | 保存 / 发送草稿 |
 | `label.list({ accountId })` | 标签列表 |
-| `rule.create(data)` / `rule.test({ id, mailId })` / `rule.execute({ id, mailId })` | 新建规则 / 试运行 / 手动执行（命中才执行动作） |
+| `rule.create(data)` / `rule.test({ id, mailId })` / `rule.execute({ id, mailId })` | 新建规则 / 试运行 / 手动执行（命中才执行动作；发信前规则不支持手动执行） |
 | `pipeline.run({ direction, mail, account })` | 对一封邮件执行规则，返回命中规则的执行结果 |
+| `pipeline.beforeSend({ mail, account })` | 执行发信前规则，返回 `{ mail, logIds }`（修改后的邮件）；被拦截或动作出错时抛错 |
 | `template.list(...)` / `template.detail({ id })` | 模版列表 / 详情 |
 | `template.render({ id, template, mailId, accountId, data })` | 渲染模版，返回 `{ subject, html }` |
 | `template.includeTemplate(dir)` | 从目录载入系统默认分类与模版，串行执行，可重复调用 |
@@ -300,10 +301,32 @@ fastify.mailGateway.services.action.register('createTicket', {
 |------|------|------|------|------|
 | label | string | 否 | type | 显示名称 |
 | description | string | 否 | `''` | 说明 |
-| directions | array | 否 | `['receive', 'send']` | 支持的规则方向 |
+| directions | array | 否 | `['receive', 'send']` | 支持的触发时机：`receive` 收信后、`beforeSend` 发信前、`send` 发信后；发信前需显式声明 |
 | formSchema | object | 否 | - | 参数子表单，`@kne/form-creator` 搭建 Schema，前端用 `SchemaRendererInner` 渲染，字段值即 `params`；不传表示无参数 |
 | validate | function | 否 | - | `params => void`，参数间有依赖时抛错，保存规则和执行前都会调用 |
 | handler | function | 是 | - | 执行函数，抛出异常视为该动作失败 |
+
+**发信前动作**：`directions` 含 `beforeSend` 的动作在 SMTP 发送前执行，`mail` 为待发送邮件（与入库记录同构，`id` 为空，从草稿发送时为草稿 id）。`handler` 返回值可带：
+
+| 字段 | 说明 |
+|------|------|
+| `mail` | 修改邮件，可含 `subject`、`html`、`text`、`to`、`cc`、`bcc`、`headers`；后续动作拿到的是修改后的邮件；只改 `html` 时自动重算纯文本，`headers` 为追加的请求头 |
+| `block` | `true` 或拦截原因字符串，拦截发送；同一规则的其它动作仍会执行（可先通知再拦截） |
+
+任一发信前动作抛错即停止后续动作并中止发送，接口返回 400 和错误原因。
+
+```js
+fastify.mailGateway.services.action.register('dlpCheck', {
+  label: '敏感信息检查',
+  directions: ['beforeSend'],
+  handler: async ({ mail }) => {
+    if (/身份证号/.test(mail.text)) {
+      return { block: '正文包含身份证号，禁止外发' };
+    }
+    return { mail: { subject: `[已检查] ${mail.subject}` } };
+  }
+});
+```
 
 `formSchema` 字段：`type`、`name`、`label`、`rule`、`description`、`tips`、`block`、`props`（透传给控件，默认值写在 `props.defaultValue`）。注册时自动补齐缺失的区块 / 字段 `id`（如 `block-0`、`block-0-queue`），避免前端反复重新挂载；`formInfo` / `object` 区块中 `rule` 含 `REQ` 的字段在保存规则和执行前校验必填（列表类区块仅前端校验）。
 
@@ -336,6 +359,8 @@ fastify.mailGateway.services.action.register('createTicket', {
 
 设置 `secret` 时带请求头 `X-Mail-Gateway-Signature: sha256=<HMAC-SHA256(secret, body) hex>`。
 
+`event` 为规则触发时机（`receive` / `beforeSend` / `send`）。发信前规则中，接口返回 `Content-Type: application/json` 的 `{ "block": "拦截原因" }` 可拦截发送，返回 `{ "mail": { "subject": "..." } }` 可修改邮件（字段同上方发信前动作）；接口非 2xx 或超时视为动作失败，邮件不发送。
+
 #### 扩展条件
 
 内置条件只做字段文本匹配。需要外部判断（如调用 AI 判断邮件意图、查询 CRM 是否为 VIP 客户）时，宿主注册扩展条件；插件只提供注册与执行机制，不内置 AI 调用。
@@ -361,7 +386,7 @@ fastify.mailGateway.services.condition.register('aiJudge', {
 |------|------|------|------|------|
 | label | string | 否 | type | 显示名称，前端在条件字段下拉的「扩展条件」分组中展示 |
 | description | string | 否 | `''` | 说明 |
-| directions | array | 否 | `['receive', 'send']` | 支持的规则方向 |
+| directions | array | 否 | `['receive', 'send']` | 支持的触发时机；发信前（`beforeSend`）邮件尚未入库，需显式声明 |
 | formSchema | object | 否 | - | 参数表单，规则与动作相同；字段值即 `params`，`rule` 含 `REQ` 的字段保存规则和执行前校验必填 |
 | validate | function | 否 | - | `params => void`，参数间有依赖时抛错 |
 | evaluate | function | 是 | - | `async ({ mail, account, params, rule, direction, fastify, services, models, options, log }) => boolean \| { matched, reason }` |
@@ -479,7 +504,7 @@ templates/
 | 属性名 | 类型 | 说明 |
 |------|------|------|
 | name / description | string | 名称 / 描述 |
-| direction | string | `receive` / `send` |
+| direction | string | 触发时机：`receive` 收信后 / `beforeSend` 发信前 / `send` 发信后 |
 | accountIds | array | 适用邮箱，为空表示全部 |
 | conditions | object | 条件，`items` 为内置条件 `{ field, operator, value }` 或扩展条件 `{ type, params }` |
 | actions | array | 动作 |
@@ -521,8 +546,8 @@ templates/
 
 | 属性名 | 类型 | 说明 |
 |------|------|------|
-| ruleId / mailId / accountId | string | 规则 / 邮件 / 邮箱 |
-| direction | string | 触发方向 |
+| ruleId / mailId / accountId | string | 规则 / 邮件 / 邮箱；发信前规则拦截的邮件未入库，`mailId` 为空（发送成功后回填） |
+| direction | string | 触发时机 |
 | status | string | `success` / `partial` / `failed` |
 | results | array | `[{ type, success, output, logs, error }]` |
 | executionTime | number | 耗时（毫秒） |
@@ -531,8 +556,12 @@ templates/
 
 > **同步去重**：收件箱邮件按 `(accountId, Message-ID)` 去重，uidValidity 变化导致的重复拉取不会产生重复邮件。
 
-> **失败隔离**：规则执行、`onReceive`、`afterSend` 中的异常只写日志，不影响收信入库和发信结果；单个动作失败时规则日志状态为 `partial`。
+> **失败隔离**：收信后 / 发信后规则、`onReceive`、`afterSend` 中的异常只写日志，不影响收信入库和发信结果；单个动作失败时规则日志状态为 `partial`。
 
-> **规则内发信不再触发规则**：`autoReply`、`forward` 内部发信使用 `skipRules: true`，避免规则互相触发形成循环。
+> **发信前出错不放行**：发信前规则用于拦截和修改，动作出错或被拦截时中止发送并把原因返回给发件人，草稿保留。
+
+> **规则内发信不再触发规则**：`autoReply`、`forward` 内部发信使用 `skipRules: true`，不执行发信前 / 发信后规则，避免规则互相触发形成循环。
+
+> **存量库升级**：`rule.direction`、`ruleLog.direction` 新增 `beforeSend` 枚举值，`ruleLog.mailId` 改为可空；`sequelize.sync` 不会修改已有表，升级前需在数据库执行对应的 ALTER（Postgres 为 `ALTER TYPE ... ADD VALUE 'beforeSend'` 与 `ALTER COLUMN mail_id DROP NOT NULL`）。
 
 > **只操作本地数据**：已读、星标、标签、回收站、删除只修改本地记录，不回写邮件服务器。

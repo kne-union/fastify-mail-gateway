@@ -1,6 +1,6 @@
 const crypto = require('node:crypto');
 const { renderTemplate } = require('../utils/template');
-const { formatAddressList } = require('../utils/address');
+const { formatAddressList, normalizeAddressList } = require('../utils/address');
 
 const NO_REPLY_PATTERN = /(no-?reply|do-?not-?reply|mailer-daemon|postmaster)/i;
 const BULK_PRECEDENCE = ['bulk', 'list', 'junk'];
@@ -36,6 +36,26 @@ const quoteOriginal = mail => {
   const lines = [`From: ${formatAddressList(mail.from)}`, `Date: ${mail.date ? new Date(mail.date).toISOString() : ''}`, `To: ${formatAddressList(mail.to)}`, `Subject: ${mail.subject || ''}`];
   const header = lines.map(line => line.replace(/</g, '&lt;').replace(/>/g, '&gt;')).join('<br/>');
   return `<br/><div>---------- Forwarded message ----------<br/>${header}</div><br/>${mail.html || (mail.text || '').replace(/\n/g, '<br/>')}`;
+};
+
+const escapeHtml = value =>
+  String(value || '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+
+const toMailHtml = mail => mail.html || escapeHtml(mail.text).replace(/\n/g, '<br/>');
+
+// webhook 在发信前可返回 { block, mail } 拦截或修改邮件
+const readWebhookDecision = async response => {
+  if (!String(response.headers.get('content-type') || '').includes('application/json')) {
+    return {};
+  }
+  const data = await response.json().catch(() => null);
+  if (!data || typeof data !== 'object') {
+    return {};
+  }
+  return Object.fromEntries(['block', 'mail'].filter(key => data[key] !== undefined && data[key] !== null).map(key => [key, data[key]]));
 };
 
 /**
@@ -171,10 +191,112 @@ module.exports = ({ register, createFormSchema }) => {
     }
   });
 
+  register('blockSend', {
+    builtIn: true,
+    label: '拦截发送',
+    description: '不发送这封邮件，发件人会看到拦截提示；可与其它动作组合，如先调用 Webhook 通知再拦截',
+    directions: ['beforeSend'],
+    formSchema: createFormSchema([{ type: 'TextArea', name: 'message', label: '拦截提示', props: { rows: 3, placeholder: '如：外部邮件不允许携带附件' } }]),
+    handler: async ({ mail, params }) => ({
+      block: params.message || '邮件被拦截',
+      subject: mail.subject,
+      to: formatAddressList(mail.to)
+    })
+  });
+
+  register('modifySubject', {
+    builtIn: true,
+    label: '修改主题',
+    description: '给主题加前缀或后缀，支持 {{mail.subject}}、{{account.name}} 等变量；主题已带相同前缀 / 后缀时不重复添加',
+    directions: ['beforeSend'],
+    formSchema: createFormSchema([
+      { type: 'MailTemplateText', name: 'prefix', label: '前缀' },
+      { type: 'MailTemplateText', name: 'suffix', label: '后缀' }
+    ]),
+    validate: params => {
+      if (!params.prefix && !params.suffix) {
+        throw new Error('请填写前缀或后缀');
+      }
+    },
+    handler: async ({ mail, account, params }) => {
+      const data = { mail, account };
+      const prefix = params.prefix ? renderTemplate(params.prefix, data) : '';
+      const suffix = params.suffix ? renderTemplate(params.suffix, data) : '';
+      let subject = mail.subject || '';
+      if (prefix && !subject.startsWith(prefix)) {
+        subject = prefix + subject;
+      }
+      if (suffix && !subject.endsWith(suffix)) {
+        subject = subject + suffix;
+      }
+      return { mail: { subject } };
+    }
+  });
+
+  register('appendContent', {
+    builtIn: true,
+    label: '正文追加内容',
+    description: '在正文顶部或底部追加内容，如免责声明、签名；支持 {{mail.subject}}、{{account.name}} 等变量',
+    directions: ['beforeSend'],
+    formSchema: createFormSchema([
+      { type: 'MailEditor', name: 'html', label: '追加内容', rule: 'REQ' },
+      {
+        type: 'RadioGroup',
+        name: 'position',
+        label: '位置',
+        props: {
+          defaultValue: 'bottom',
+          options: [
+            { label: '正文底部', value: 'bottom' },
+            { label: '正文顶部', value: 'top' }
+          ]
+        }
+      }
+    ]),
+    handler: async ({ mail, account, params }) => {
+      const content = renderTemplate(params.html, { mail, account }, { html: true });
+      const body = toMailHtml(mail);
+      return { mail: { html: params.position === 'top' ? content + body : body + content } };
+    }
+  });
+
+  register('addRecipients', {
+    builtIn: true,
+    label: '添加抄送 / 密送',
+    description: '给邮件追加抄送或密送地址，已在收件人、抄送、密送中的地址不重复添加',
+    directions: ['beforeSend'],
+    formSchema: createFormSchema([
+      { type: 'MailContactSelect', name: 'cc', label: '抄送' },
+      { type: 'MailContactSelect', name: 'bcc', label: '密送' }
+    ]),
+    validate: params => {
+      if (normalizeAddressList(params.cc).length === 0 && normalizeAddressList(params.bcc).length === 0) {
+        throw new Error('请填写抄送或密送地址');
+      }
+    },
+    handler: async ({ mail, params }) => {
+      const existing = new Set([...(mail.to || []), ...(mail.cc || []), ...(mail.bcc || [])].map(item => String(item.address).toLowerCase()));
+      const pick = list =>
+        normalizeAddressList(list).filter(item => {
+          const key = String(item.address).toLowerCase();
+          if (existing.has(key)) {
+            return false;
+          }
+          existing.add(key);
+          return true;
+        });
+      const cc = pick(params.cc);
+      const bcc = pick(params.bcc);
+      return { mail: { cc: [...(mail.cc || []), ...cc], bcc: [...(mail.bcc || []), ...bcc] }, added: { cc: formatAddressList(cc), bcc: formatAddressList(bcc) } };
+    }
+  });
+
   register('webhook', {
     builtIn: true,
     label: '调用 Webhook',
-    description: 'POST JSON 到指定地址，可选用 secret 对请求体做 HMAC-SHA256 签名（请求头 X-Mail-Gateway-Signature）',
+    description:
+      'POST JSON 到指定地址，可选用 secret 对请求体做 HMAC-SHA256 签名（请求头 X-Mail-Gateway-Signature）；发信前规则中，接口返回 JSON { block, mail } 可拦截或修改邮件',
+    directions: ['receive', 'beforeSend', 'send'],
     formSchema: createFormSchema([
       { type: 'Input', name: 'url', label: '地址', rule: 'REQ' },
       { type: 'Password', name: 'secret', label: '签名密钥' },
@@ -196,7 +318,7 @@ module.exports = ({ register, createFormSchema }) => {
       if (!response.ok) {
         throw new Error(`Webhook 返回 ${response.status}`);
       }
-      return { status: response.status };
+      return Object.assign({ status: response.status }, direction === 'beforeSend' ? await readWebhookDecision(response) : {});
     }
   });
 };
