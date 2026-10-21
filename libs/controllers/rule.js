@@ -1,6 +1,7 @@
 const fp = require('fastify-plugin');
 const { userIdOf } = require('../utils/owner');
 const { idParams, pageQuery, statusBody } = require('../utils/schema');
+const { DIRECTIONS } = require('../utils/direction');
 
 const conditionsSchema = {
   type: 'object',
@@ -29,7 +30,7 @@ const ruleBody = (required = []) => ({
   properties: {
     name: { type: 'string', description: '规则名称' },
     description: { type: 'string', description: '描述' },
-    direction: { type: 'string', enum: ['receive', 'send'], description: '触发方向' },
+    direction: { type: 'string', enum: DIRECTIONS, description: '触发时机：receive 收信后，beforeSend 发信前，send 发信后' },
     accountIds: { type: 'array', items: { type: 'string' }, description: '适用邮箱账号，为空表示全部' },
     conditions: conditionsSchema,
     actions: {
@@ -57,7 +58,7 @@ module.exports = fp(async (fastify, options) => {
       schema: {
         summary: '可用动作列表',
         description: '返回已注册动作的元数据（内置 + 宿主注册），前端据此渲染动作参数表单',
-        querystring: { type: 'object', properties: { direction: { type: 'string', enum: ['receive', 'send'] } } }
+        querystring: { type: 'object', properties: { direction: { type: 'string', enum: DIRECTIONS } } }
       }
     },
     async request => services.action.list({ direction: request.query.direction })
@@ -70,7 +71,7 @@ module.exports = fp(async (fastify, options) => {
       schema: {
         summary: '条件可选项',
         description: '返回内置条件的字段、操作符，以及已注册扩展条件的元数据（extensions，含 formSchema）',
-        querystring: { type: 'object', properties: { direction: { type: 'string', enum: ['receive', 'send'] } } }
+        querystring: { type: 'object', properties: { direction: { type: 'string', enum: DIRECTIONS } } }
       }
     },
     async request => services.rule.conditionOptions({ direction: request.query.direction })
@@ -85,7 +86,7 @@ module.exports = fp(async (fastify, options) => {
         description: '按优先级分页获取规则',
         querystring: pageQuery({
           keyword: { type: 'string', description: '规则名称' },
-          direction: { type: 'string', enum: ['receive', 'send'] },
+          direction: { type: 'string', enum: DIRECTIONS },
           status: { type: 'string', enum: ['enabled', 'disabled'] }
         })
       }
@@ -175,7 +176,7 @@ module.exports = fp(async (fastify, options) => {
             mailIds: { type: 'array', items: { type: 'string' }, maxItems: 20, description: '多封邮件 ID，最多 20' },
             conditions: conditionsSchema,
             accountIds: { type: 'array', items: { type: 'string' } },
-            direction: { type: 'string', enum: ['receive', 'send'], description: '传入 conditions 时按该方向校验扩展条件，默认取规则方向或 receive' }
+            direction: { type: 'string', enum: DIRECTIONS, description: '传入 conditions 时按该方向校验扩展条件，默认取规则方向或 receive' }
           }
         }
       }
@@ -214,7 +215,7 @@ module.exports = fp(async (fastify, options) => {
           ruleId: { type: 'string' },
           mailId: { type: 'string' },
           accountId: { type: 'string' },
-          direction: { type: 'string', enum: ['receive', 'send'] },
+          direction: { type: 'string', enum: DIRECTIONS },
           status: { type: 'string', enum: ['success', 'partial', 'failed'] }
         })
       }

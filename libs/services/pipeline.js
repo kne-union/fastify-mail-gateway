@@ -1,4 +1,11 @@
 const fp = require('fastify-plugin');
+const { createError } = require('../utils/error');
+
+// 发信前动作可修改的邮件字段
+const MUTABLE_FIELDS = ['subject', 'html', 'text', 'to', 'cc', 'bcc', 'headers'];
+
+const pickMailPatch = patch =>
+  Object.fromEntries(MUTABLE_FIELDS.filter(key => patch[key] !== undefined).map(key => [key, patch[key]]));
 
 module.exports = fp(async (fastify, options) => {
   const { models, services } = fastify[options.name];
@@ -31,23 +38,62 @@ module.exports = fp(async (fastify, options) => {
     });
   };
 
+  /**
+   * 执行规则动作并写日志。发信前（beforeSend）：动作返回的 output.mail 依次合并进待发送邮件，output.block 标记拦截；
+   * 任一动作出错即停止后续动作（出错不放行）；返回值额外带 mail（修改后的邮件）、block、logId
+   */
   const executeRule = async ({ rule, mail, account, direction }) => {
+    const isBeforeSend = direction === 'beforeSend';
     const startTime = process.hrtime.bigint();
     const results = [];
+    let current = mail;
+    let block = null;
     for (const item of rule.actions || []) {
       try {
-        const { output, logs } = await services.action.execute({ type: item.type, params: item.params || {}, mail, account, rule: toPlainMail(rule), direction });
+        const { output, logs } = await services.action.execute({ type: item.type, params: item.params || {}, mail: current, account, rule: toPlainMail(rule), direction });
         results.push({ type: item.type, success: true, output, logs });
+        if (isBeforeSend && output && typeof output === 'object') {
+          if (output.mail && typeof output.mail === 'object') {
+            current = Object.assign({}, current, pickMailPatch(output.mail));
+          }
+          if (output.block) {
+            block = { reason: typeof output.block === 'string' ? output.block : '' };
+          }
+        }
       } catch (e) {
         fastify.log.error(e, `[fastify-mail-gateway] 规则「${rule.name}」动作 ${item.type} 执行失败`);
         results.push({ type: item.type, success: false, error: e.message });
+        if (isBeforeSend) {
+          break;
+        }
       }
     }
     const executionTime = Number((process.hrtime.bigint() - startTime) / 1000000n);
     const failedCount = results.filter(item => !item.success).length;
     const status = failedCount === 0 ? 'success' : failedCount === results.length ? 'failed' : 'partial';
-    await models.ruleLog.create({ ruleId: rule.id, mailId: mail.id, accountId: mail.accountId, userId: account && account.userId, direction, status, results, executionTime });
-    return { ruleId: rule.id, name: rule.name, status, results };
+    const log = await models.ruleLog.create({
+      ruleId: rule.id,
+      mailId: mail.id || null,
+      accountId: mail.accountId,
+      userId: account && account.userId,
+      direction,
+      status,
+      results,
+      executionTime
+    });
+    const execution = { ruleId: rule.id, name: rule.name, status, results };
+    return isBeforeSend ? Object.assign(execution, { mail: current, block, logId: log.id }) : execution;
+  };
+
+  const findMatchedRule = async ({ direction, mail, account }) => {
+    const rules = (await loadRules({ direction, userId: account && account.userId })).filter(rule => ruleMatchesAccount(rule, mail.accountId));
+    for (const rule of rules) {
+      const { matched } = await services.condition.evaluate({ conditions: rule.conditions, mail, account, rule: toPlainMail(rule), direction });
+      if (matched) {
+        return rule;
+      }
+    }
+    return null;
   };
 
   /**
@@ -57,17 +103,30 @@ module.exports = fp(async (fastify, options) => {
   const run = async ({ direction, mail, account }) => {
     const plainMail = toPlainMail(mail);
     const publicAccount = toPublicAccount(account) || toPlainMail(await services.account.detail({ id: plainMail.accountId }));
-    const rules = (await loadRules({ direction, userId: publicAccount && publicAccount.userId })).filter(rule => ruleMatchesAccount(rule, plainMail.accountId));
-    const executed = [];
-    for (const rule of rules) {
-      const { matched } = await services.condition.evaluate({ conditions: rule.conditions, mail: plainMail, account: publicAccount, rule: toPlainMail(rule), direction });
-      if (!matched) {
-        continue;
-      }
-      executed.push(await executeRule({ rule, mail: plainMail, account: publicAccount, direction }));
-      break;
+    const rule = await findMatchedRule({ direction, mail: plainMail, account: publicAccount });
+    return rule ? [await executeRule({ rule, mail: plainMail, account: publicAccount, direction })] : [];
+  };
+
+  /**
+   * 发信前规则：命中第一条规则后执行其动作，返回修改后的邮件与日志 id（发送成功后回填 mailId）。
+   * 与 dispatch 不同，异常不吞：动作出错或被拦截时抛错，由 mail.send 中止发送
+   */
+  const beforeSend = async ({ mail, account }) => {
+    const publicAccount = toPublicAccount(account);
+    const rule = await findMatchedRule({ direction: 'beforeSend', mail, account: publicAccount });
+    if (!rule) {
+      return { mail, logIds: [] };
     }
-    return executed;
+    const execution = await executeRule({ rule, mail, account: publicAccount, direction: 'beforeSend' });
+    const failed = execution.results.find(item => !item.success);
+    if (failed) {
+      const action = services.action.get(failed.type);
+      throw createError(`发信前规则「${rule.name}」的动作「${action ? action.label : failed.type}」执行失败：${failed.error}`);
+    }
+    if (execution.block) {
+      throw createError(`邮件已被规则「${rule.name}」拦截${execution.block.reason ? `：${execution.block.reason}` : ''}`);
+    }
+    return { mail: execution.mail, logIds: [execution.logId] };
   };
 
   /**
@@ -89,5 +148,5 @@ module.exports = fp(async (fastify, options) => {
     }
   };
 
-  services.pipeline = { run, dispatch, executeRule };
+  services.pipeline = { run, dispatch, beforeSend, executeRule };
 });

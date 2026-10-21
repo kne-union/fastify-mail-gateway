@@ -1,3 +1,5 @@
+const { DIRECTIONS } = require('../utils/direction');
+
 module.exports = ({ DataTypes, options }) => {
   return {
     model: {
@@ -11,10 +13,10 @@ module.exports = ({ DataTypes, options }) => {
         comment: '描述'
       },
       direction: {
-        type: DataTypes.ENUM('receive', 'send'),
+        type: DataTypes.ENUM(...DIRECTIONS),
         allowNull: false,
         defaultValue: 'receive',
-        comment: '触发方向：receive 收到邮件，send 发出邮件'
+        comment: '触发时机：receive 收信后，beforeSend 发信前（可拦截或修改），send 发信后'
       },
       accountIds: {
         type: DataTypes.JSON,

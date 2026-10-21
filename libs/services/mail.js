@@ -342,8 +342,49 @@ module.exports = fp(async (fastify, options) => {
     return list.length > 0 ? list : null;
   };
 
+  const toHeaderRecord = headers => Object.fromEntries(Object.entries(headers || {}).map(([key, value]) => [key.toLowerCase(), String(value)]));
+
+  // 发信前规则看到的邮件：与入库记录同构，便于复用条件求值与动作
+  const toOutgoingMail = ({ mailOptions, account, attachments, draftId }) => ({
+    id: draftId || null,
+    accountId: account.id,
+    folder: 'sent',
+    from: [{ name: account.name, address: account.address }],
+    to: normalizeAddressList(mailOptions.to),
+    cc: normalizeAddressList(mailOptions.cc),
+    bcc: normalizeAddressList(mailOptions.bcc),
+    subject: mailOptions.subject,
+    html: mailOptions.html || '',
+    text: mailOptions.text || '',
+    attachments: (attachments || []).map(({ id, filename, contentType, size, url }) => ({ id, filename, contentType, size, url })),
+    headers: toHeaderRecord(mailOptions.headers),
+    inReplyTo: mailOptions.inReplyTo || null,
+    references: mailOptions.references || null,
+    date: new Date()
+  });
+
+  // 把发信前规则修改后的邮件写回 mailOptions；只改了 html 时同步重算纯文本
+  const applyOutgoingMail = (mailOptions, outgoing, original) => {
+    const htmlChanged = outgoing.html !== original.html;
+    const textChanged = outgoing.text !== original.text;
+    const headersChanged = outgoing.headers !== original.headers;
+    const recipientsChanged = ['to', 'cc', 'bcc'].some(key => outgoing[key] !== original[key]);
+    if (recipientsChanged && normalizeAddressList(outgoing.to).length === 0) {
+      throw createError('发信前规则修改后收件人为空');
+    }
+    return Object.assign({}, mailOptions, {
+      to: normalizeAddressList(outgoing.to),
+      cc: normalizeAddressList(outgoing.cc),
+      bcc: normalizeAddressList(outgoing.bcc),
+      subject: outgoing.subject || '',
+      html: outgoing.html || undefined,
+      text: textChanged ? outgoing.text || '' : htmlChanged ? stripHtml(outgoing.html).replace(/\s+/g, ' ').trim() : mailOptions.text,
+      headers: headersChanged ? Object.assign({}, mailOptions.headers, outgoing.headers) : mailOptions.headers
+    });
+  };
+
   /**
-   * 发送邮件：beforeSend 钩子 → SMTP 发送 → 存入已发送 → 发信规则 → afterSend 钩子
+   * 发送邮件：beforeSend 钩子 → 发信前规则（可拦截 / 修改）→ SMTP 发送 → 存入已发送 → 发信后规则 → afterSend 钩子
    * 传 draftId 时把草稿转为已发送；skipRules 用于自动回复/转发等规则内发信，避免规则循环触发
    */
   const send = async ({ accountId, to, cc, bcc, subject, html, text, attachments = [], inReplyTo, references, headers, draftId, skipRules = false, userId }) => {
@@ -383,6 +424,14 @@ module.exports = fp(async (fastify, options) => {
       }
     }
 
+    let beforeSendLogIds = [];
+    if (!skipRules) {
+      const outgoing = toOutgoingMail({ mailOptions, account, attachments, draftId });
+      const { mail: modified, logIds } = await services.pipeline.beforeSend({ mail: outgoing, account });
+      mailOptions = applyOutgoingMail(mailOptions, modified, outgoing);
+      beforeSendLogIds = logIds;
+    }
+
     const transport = services.account.createTransport(services.account.toConnectionConfig(account));
     let info;
     try {
@@ -407,7 +456,7 @@ module.exports = fp(async (fastify, options) => {
       text: mailOptions.text || '',
       date: new Date(),
       attachments: (attachments || []).map(({ id, filename, contentType, size, url }) => ({ id, filename, contentType, size, url })),
-      headers: Object.fromEntries(Object.entries(headers || {}).map(([key, value]) => [key.toLowerCase(), String(value)]))
+      headers: toHeaderRecord(mailOptions.headers)
     };
 
     let mail;
@@ -420,6 +469,10 @@ module.exports = fp(async (fastify, options) => {
       mail = draft;
     } else {
       mail = await models.mail.create(record);
+    }
+
+    if (beforeSendLogIds.length > 0) {
+      await models.ruleLog.update({ mailId: mail.id }, { where: { id: beforeSendLogIds } });
     }
 
     if (!skipRules) {

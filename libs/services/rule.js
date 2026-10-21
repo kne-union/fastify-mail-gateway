@@ -183,6 +183,9 @@ module.exports = fp(async (fastify, options) => {
   const execute = async ({ id, mailId, mailIds, userId }) => {
     const ownerId = requireUser(userId);
     const rule = await detail({ id, userId: ownerId });
+    if (rule.direction === 'beforeSend') {
+      throw createError('发信前规则只在发信时执行，不支持手动执行');
+    }
     const ids = normalizeMailIds({ mailId, mailIds });
     const results = [];
     for (const targetMailId of ids) {

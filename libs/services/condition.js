@@ -2,8 +2,7 @@ const fp = require('fastify-plugin');
 const { createError } = require('../utils/error');
 const { evaluateItem, CONDITION_FIELDS, CONDITION_OPERATORS } = require('../utils/condition');
 const { normalizeFormSchema, collectFields, isRequiredField, getPathValue } = require('../utils/form-schema');
-
-const DIRECTIONS = ['receive', 'send'];
+const { DIRECTIONS, DEFAULT_DIRECTIONS } = require('../utils/direction');
 const DEFAULT_TIMEOUT = 30000;
 
 const isExtensionItem = item => !!item && typeof item.type === 'string' && item.type !== '' && item.type !== 'field';
@@ -46,7 +45,7 @@ module.exports = fp(async (fastify, options) => {
       type,
       label: target.label || type,
       description: target.description || '',
-      directions: (target.directions || DIRECTIONS).filter(item => DIRECTIONS.includes(item)),
+      directions: (target.directions || DEFAULT_DIRECTIONS).filter(item => DIRECTIONS.includes(item)),
       formSchema,
       fields: collectFields(formSchema),
       timeout: target.timeout > 0 ? target.timeout : DEFAULT_TIMEOUT,

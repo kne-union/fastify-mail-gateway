@@ -1,3 +1,5 @@
+const { DIRECTIONS } = require('../utils/direction');
+
 module.exports = ({ DataTypes, definePrimaryType, options }) => {
   return {
     model: {
@@ -6,15 +8,14 @@ module.exports = ({ DataTypes, definePrimaryType, options }) => {
         comment: '规则'
       }),
       mailId: definePrimaryType('mailId', {
-        allowNull: false,
-        comment: '邮件'
+        comment: '邮件；发信前规则拦截的邮件未入库，为空'
       }),
       accountId: definePrimaryType('accountId', {
         comment: '邮箱账号'
       }),
       direction: {
-        type: DataTypes.ENUM('receive', 'send'),
-        comment: '触发方向'
+        type: DataTypes.ENUM(...DIRECTIONS),
+        comment: '触发时机'
       },
       status: {
         type: DataTypes.ENUM('success', 'partial', 'failed'),
