@@ -8,8 +8,12 @@ module.exports = ({ DataTypes, definePrimaryType, options }) => {
         comment: '规则'
       }),
       mailId: definePrimaryType('mailId', {
-        comment: '邮件；发信前规则拦截的邮件未入库，为空'
+        comment: '邮件；发信前规则拦截的邮件未入库、定时规则处理一批邮件时为空'
       }),
+      mailIds: {
+        type: DataTypes.JSON,
+        comment: '定时规则本次处理的邮件 id 列表'
+      },
       accountId: definePrimaryType('accountId', {
         comment: '邮箱账号'
       }),

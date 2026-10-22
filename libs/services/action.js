@@ -14,10 +14,11 @@ module.exports = fp(async (fastify, options) => {
    *   formSchema: 可选，@kne/form-creator 搭建 Schema，前端用 SchemaRendererInner 渲染参数表单，字段值即 params；
    *     字段 rule 含 REQ 时保存与执行前校验必填，默认值写在字段 props.defaultValue
    *   validate: 可选，(params) => void，参数之间存在依赖时抛错
-   *   directions: 可选，默认 ['receive', 'send']；发信前（beforeSend）需显式声明
-   *   handler: async ({ mail, account, params, rule, direction, fastify, services, models, log }) => output
+   *   directions: 可选，默认 ['receive', 'send']；发信前（beforeSend）、定时（schedule）需显式声明
+   *   handler: async ({ mail, mails, account, params, rule, direction, fastify, services, models, log }) => output
    *     beforeSend 时 output 可带 { mail: { subject, html, text, to, cc, bcc, headers } } 修改待发送邮件，
-   *     或 { block: true | '拦截原因' } 拦截发送；后续动作拿到的是已修改的邮件
+   *     { block: true | '拦截原因' } 拦截发送，或 { draft: true } 不发送、改存草稿；后续动作拿到的是已修改的邮件
+   *     schedule 时 mail 为 null，mails 为本次命中的未读邮件（按时间升序）
    */
   const register = (type, action) => {
     if (!type || typeof type !== 'string') {
@@ -92,7 +93,7 @@ module.exports = fp(async (fastify, options) => {
     });
   };
 
-  const execute = async ({ type, params = {}, mail, account, rule, direction }) => {
+  const execute = async ({ type, params = {}, mail, mails, account, rule, direction }) => {
     const action = registry.get(type);
     if (!action) {
       throw new Error(`动作类型 ${type} 未注册`);
@@ -101,6 +102,7 @@ module.exports = fp(async (fastify, options) => {
     const logs = [];
     const output = await action.handler({
       mail,
+      mails,
       account,
       params,
       rule,

@@ -26,15 +26,24 @@ module.exports = fp(async (fastify, options) => {
     fastify.log.info(`[fastify-mail-gateway] ${table} 补齐列 user_id`);
   };
 
-  const ensureDefaultColumn = async () => {
-    const queryInterface = models.account.sequelize.getQueryInterface();
-    const { table, schema } = tableOf(models.account);
+  const ensureColumn = async (model, column, attribute, field) => {
+    const queryInterface = model.sequelize.getQueryInterface();
+    const { table, schema } = tableOf(model);
     const describe = await queryInterface.describeTable(table, schema ? { schema } : undefined);
-    if (describe.is_default || describe.isDefault) {
+    if (describe[column] || describe[field]) {
       return;
     }
-    await queryInterface.addColumn(table, 'is_default', { type: DataTypes.BOOLEAN, defaultValue: false }, schema ? { schema } : undefined);
-    fastify.log.info(`[fastify-mail-gateway] ${table} 补齐列 is_default`);
+    await queryInterface.addColumn(table, column, attribute, schema ? { schema } : undefined);
+    fastify.log.info(`[fastify-mail-gateway] ${table} 补齐列 ${column}`);
+  };
+
+  const ensureDefaultColumn = () => ensureColumn(models.account, 'is_default', { type: DataTypes.BOOLEAN, defaultValue: false }, 'isDefault');
+
+  // 定时规则新增的列；direction 枚举新增 schedule 需由使用方执行 SQL 迁移（sync 不修改已有枚举）
+  const ensureScheduleColumns = async () => {
+    await ensureColumn(models.rule, 'trigger', { type: DataTypes.JSON }, 'trigger');
+    await ensureColumn(models.rule, 'last_triggered_at', { type: DataTypes.DATE }, 'lastTriggeredAt');
+    await ensureColumn(models.ruleLog, 'mail_ids', { type: DataTypes.JSON }, 'mailIds');
   };
 
   const backfillDefault = async () => {
@@ -203,6 +212,7 @@ module.exports = fp(async (fastify, options) => {
       }
     }
     await ensureDefaultColumn();
+    await ensureScheduleColumns();
     await backfill();
     await backfillDefault();
   };

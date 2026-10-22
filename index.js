@@ -10,6 +10,10 @@ module.exports = fp(
         dbTableNamePrefix: 't_',
         prefix: '/api/v1/mail-gateway',
         syncCronTime: '*/5 * * * *',
+        /** 定时规则（direction=schedule）的检查频率，设为 false 关闭 */
+        scheduleCronTime: '*/5 * * * *',
+        /** 标为已读 / 移入回收站时是否回写 IMAP 服务器（\Seen 标记 / 移入服务器回收站） */
+        syncFlagsToServer: true,
         syncBatchSize: 50,
         inboxPath: 'INBOX',
         secretKey: null,
@@ -67,7 +71,7 @@ module.exports = fp(
       fastify.log.warn('[fastify-mail-gateway] options.secretKey 未设置，邮箱密码将使用内置默认密钥加密，生产环境请务必配置');
     }
 
-    if (options.syncCronTime && !fastify.hasDecorator('cron')) {
+    if ((options.syncCronTime || options.scheduleCronTime) && !fastify.hasDecorator('cron')) {
       const cronPlugin = require('fastify-cron');
       await fastify.register(cronPlugin.default || cronPlugin);
     }
@@ -114,6 +118,20 @@ module.exports = fp(
                 await services.sync.syncAll();
               } catch (e) {
                 fastify.log.error(e, '[fastify-mail-gateway] 定时同步邮件失败');
+              }
+            },
+            start: true
+          });
+        }
+
+        if (options.scheduleCronTime) {
+          fastify.cron.createJob({
+            cronTime: options.scheduleCronTime,
+            onTick: async () => {
+              try {
+                await services.schedule.runAll();
+              } catch (e) {
+                fastify.log.error(e, '[fastify-mail-gateway] 定时规则执行失败');
               }
             },
             start: true

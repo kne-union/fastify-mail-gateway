@@ -4,8 +4,7 @@ const { createError } = require('../utils/error');
 // 发信前动作可修改的邮件字段
 const MUTABLE_FIELDS = ['subject', 'html', 'text', 'to', 'cc', 'bcc', 'headers'];
 
-const pickMailPatch = patch =>
-  Object.fromEntries(MUTABLE_FIELDS.filter(key => patch[key] !== undefined).map(key => [key, patch[key]]));
+const pickMailPatch = patch => Object.fromEntries(MUTABLE_FIELDS.filter(key => patch[key] !== undefined).map(key => [key, patch[key]]));
 
 module.exports = fp(async (fastify, options) => {
   const { models, services } = fastify[options.name];
@@ -42,15 +41,16 @@ module.exports = fp(async (fastify, options) => {
    * 执行规则动作并写日志。发信前（beforeSend）：动作返回的 output.mail 依次合并进待发送邮件，output.block 标记拦截；
    * 任一动作出错即停止后续动作（出错不放行）；返回值额外带 mail（修改后的邮件）、block、logId
    */
-  const executeRule = async ({ rule, mail, account, direction }) => {
+  const executeRule = async ({ rule, mail = null, mails, account, direction }) => {
     const isBeforeSend = direction === 'beforeSend';
     const startTime = process.hrtime.bigint();
     const results = [];
     let current = mail;
     let block = null;
+    let draft = false;
     for (const item of rule.actions || []) {
       try {
-        const { output, logs } = await services.action.execute({ type: item.type, params: item.params || {}, mail: current, account, rule: toPlainMail(rule), direction });
+        const { output, logs } = await services.action.execute({ type: item.type, params: item.params || {}, mail: current, mails, account, rule: toPlainMail(rule), direction });
         results.push({ type: item.type, success: true, output, logs });
         if (isBeforeSend && output && typeof output === 'object') {
           if (output.mail && typeof output.mail === 'object') {
@@ -58,6 +58,9 @@ module.exports = fp(async (fastify, options) => {
           }
           if (output.block) {
             block = { reason: typeof output.block === 'string' ? output.block : '' };
+          }
+          if (output.draft) {
+            draft = true;
           }
         }
       } catch (e) {
@@ -73,8 +76,9 @@ module.exports = fp(async (fastify, options) => {
     const status = failedCount === 0 ? 'success' : failedCount === results.length ? 'failed' : 'partial';
     const log = await models.ruleLog.create({
       ruleId: rule.id,
-      mailId: mail.id || null,
-      accountId: mail.accountId,
+      mailId: (mail && mail.id) || null,
+      mailIds: mails ? mails.map(item => item.id) : null,
+      accountId: mail ? mail.accountId : account && account.id,
       userId: account && account.userId,
       direction,
       status,
@@ -82,7 +86,7 @@ module.exports = fp(async (fastify, options) => {
       executionTime
     });
     const execution = { ruleId: rule.id, name: rule.name, status, results };
-    return isBeforeSend ? Object.assign(execution, { mail: current, block, logId: log.id }) : execution;
+    return isBeforeSend ? Object.assign(execution, { mail: current, block, draft, logId: log.id }) : execution;
   };
 
   const findMatchedRule = async ({ direction, mail, account }) => {
@@ -108,14 +112,15 @@ module.exports = fp(async (fastify, options) => {
   };
 
   /**
-   * 发信前规则：命中第一条规则后执行其动作，返回修改后的邮件与日志 id（发送成功后回填 mailId）。
+   * 发信前规则：命中第一条规则后执行其动作，返回修改后的邮件与日志 id（发送成功后回填 mailId）；
+   * draft=true 表示动作要求不发送、改存草稿。
    * 与 dispatch 不同，异常不吞：动作出错或被拦截时抛错，由 mail.send 中止发送
    */
   const beforeSend = async ({ mail, account }) => {
     const publicAccount = toPublicAccount(account);
     const rule = await findMatchedRule({ direction: 'beforeSend', mail, account: publicAccount });
     if (!rule) {
-      return { mail, logIds: [] };
+      return { mail, logIds: [], draft: false };
     }
     const execution = await executeRule({ rule, mail, account: publicAccount, direction: 'beforeSend' });
     const failed = execution.results.find(item => !item.success);
@@ -126,7 +131,7 @@ module.exports = fp(async (fastify, options) => {
     if (execution.block) {
       throw createError(`邮件已被规则「${rule.name}」拦截${execution.block.reason ? `：${execution.block.reason}` : ''}`);
     }
-    return { mail: execution.mail, logIds: [execution.logId] };
+    return { mail: execution.mail, logIds: [execution.logId], draft: execution.draft };
   };
 
   /**

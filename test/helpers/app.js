@@ -39,6 +39,7 @@ const createFastify = async (options = {}) => {
   await fastify.register(require('../../index'), {
     prefix: '/api/mail-gateway',
     syncCronTime: false,
+    scheduleCronTime: false,
     secretKey: 'test-secret-key',
     getUserModel: () => UserModel,
     getAuthenticate: () => [],

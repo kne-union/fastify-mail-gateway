@@ -15,6 +15,36 @@ module.exports = fp(async (fastify, options) => {
 
   const validateConditions = (conditions, direction) => services.condition.validate({ conditions, direction });
 
+  const toPositiveNumber = (value, label, { min = 1, defaultValue } = {}) => {
+    if (value == null || value === '') {
+      if (defaultValue !== undefined) {
+        return defaultValue;
+      }
+      throw createError(`请填写${label}`);
+    }
+    const number = Number(value);
+    if (!Number.isFinite(number) || number < min) {
+      throw createError(`${label}不能小于 ${min}`);
+    }
+    return number;
+  };
+
+  /**
+   * 定时规则的触发配置：时间窗口内（windowDays 天）未读邮件达到 minCount 封时触发，两次触发至少间隔 cooldownMinutes 分钟（默认等于时间窗口）
+   */
+  const normalizeTrigger = (trigger, direction) => {
+    if (direction !== 'schedule') {
+      return null;
+    }
+    const { windowDays, minCount, cooldownMinutes } = trigger || {};
+    const window = toPositiveNumber(windowDays, '统计时间窗口（天）');
+    return {
+      windowDays: window,
+      minCount: toPositiveNumber(minCount, '未读邮件数量阈值'),
+      cooldownMinutes: toPositiveNumber(cooldownMinutes, '触发冷却时间（分钟）', { min: 0, defaultValue: window * 24 * 60 })
+    };
+  };
+
   const assertOwnAccounts = async (accountIds, userId) => {
     const ids = [...new Set((accountIds || []).filter(Boolean).map(String))];
     if (ids.length === 0) {
@@ -57,12 +87,13 @@ module.exports = fp(async (fastify, options) => {
     return { pageData: rows, totalCount: count };
   };
 
-  const create = async ({ name, description, direction = 'receive', accountIds = [], conditions, actions = [], priority = 0, stopProcessing = true, status = 'enabled', userId }) => {
+  const create = async ({ name, description, direction = 'receive', accountIds = [], conditions, actions = [], trigger, priority = 0, stopProcessing = true, status = 'enabled', userId }) => {
     const ownerId = requireUser(userId);
     await assertOwnAccounts(accountIds, ownerId);
     const normalizedConditions = validateConditions(conditions, direction);
     services.action.validate({ actions, direction });
-    return await models.rule.create({ name, description, direction, accountIds, conditions: normalizedConditions, actions, priority, stopProcessing, status, userId: ownerId });
+    const normalizedTrigger = normalizeTrigger(trigger, direction);
+    return await models.rule.create({ name, description, direction, accountIds, conditions: normalizedConditions, actions, trigger: normalizedTrigger, priority, stopProcessing, status, userId: ownerId });
   };
 
   const save = async ({ id, userId, ...data }) => {
@@ -76,6 +107,9 @@ module.exports = fp(async (fastify, options) => {
     }
     if (data.actions !== undefined || data.direction !== undefined) {
       services.action.validate({ actions: data.actions !== undefined ? data.actions : rule.actions, direction });
+    }
+    if (data.trigger !== undefined || data.direction !== undefined) {
+      rule.trigger = normalizeTrigger(data.trigger !== undefined ? data.trigger : rule.trigger, direction);
     }
     ['name', 'description', 'direction', 'accountIds', 'actions', 'priority', 'stopProcessing', 'status'].forEach(key => {
       if (data[key] !== undefined) {
@@ -185,6 +219,9 @@ module.exports = fp(async (fastify, options) => {
     const rule = await detail({ id, userId: ownerId });
     if (rule.direction === 'beforeSend') {
       throw createError('发信前规则只在发信时执行，不支持手动执行');
+    }
+    if (rule.direction === 'schedule') {
+      throw createError('未读邮件规则按时间窗口统计后批量执行，不支持对单封邮件手动执行');
     }
     const ids = normalizeMailIds({ mailId, mailIds });
     const results = [];
