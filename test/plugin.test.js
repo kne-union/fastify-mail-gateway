@@ -906,6 +906,237 @@ describe('@kne/fastify-mail-gateway', function () {
     });
   });
 
+  describe('发信前规则改存草稿', () => {
+    let account;
+
+    beforeEach(async () => {
+      fastify = await createFastify({
+        actions: {
+          toDraft: {
+            label: '改存草稿',
+            directions: ['beforeSend'],
+            handler: async ({ mail }) => {
+              if ((mail.headers || {})['x-reviewed']) {
+                return { skipped: true };
+              }
+              return { draft: true, mail: { subject: `[待核对] ${mail.subject}`, headers: { 'X-Reviewed': '1' } } };
+            }
+          }
+        }
+      });
+      account = await createAccount();
+      await inject('POST', '/rules', { name: '先存草稿', direction: 'beforeSend', actions: [{ type: 'toDraft' }] });
+    });
+
+    it('should save the modified mail as draft instead of sending, then send it manually', async () => {
+      const saved = await inject('POST', '/mails/send', { accountId: account.id, to: 'a@x.com', subject: 'hello', html: '<p>正文</p>', inReplyTo: '<origin@x>' });
+      expect(saved.folder).to.equal('draft');
+      expect(saved.subject).to.equal('[待核对] hello');
+      expect(saved.headers).to.deep.equal({ 'x-reviewed': '1' });
+      expect(saved.inReplyTo).to.equal('<origin@x>');
+      expect(fastify.testContext.sentMails).to.have.length(0);
+      const logs = await inject('GET', '/rule-logs?filter[direction]=beforeSend');
+      expect(logs.pageData[0].mailId).to.equal(saved.id);
+
+      await inject('PUT', `/drafts/${saved.id}`, { accountId: account.id, to: 'a@x.com', subject: '[待核对] hello 已改', html: '<p>改过</p>' });
+      const sent = await inject('POST', `/drafts/${saved.id}/send`, {});
+      expect(sent.folder).to.equal('sent');
+      expect(fastify.testContext.sentMails).to.have.length(1);
+      expect(fastify.testContext.sentMails[0].subject).to.equal('[待核对] hello 已改');
+    });
+
+    it('should update the existing draft when sending from a draft', async () => {
+      const draft = await inject('POST', '/drafts', { accountId: account.id, to: 'a@x.com', subject: '草稿' });
+      const saved = await inject('POST', `/drafts/${draft.id}/send`, {});
+      expect(saved.id).to.equal(draft.id);
+      expect(saved.folder).to.equal('draft');
+      expect((await inject('GET', `/mails/stats?accountId=${account.id}`)).folders.draft.total).to.equal(1);
+    });
+  });
+
+  describe('IMAP 回写', () => {
+    let account;
+
+    const syncMails = async count => {
+      for (let index = 0; index < count; index++) {
+        await fastify.testContext.imap.addMessage({ subject: `邮件${index + 1}`, messageId: `<m${index + 1}@x>` });
+      }
+      await fastify.mailGateway.services.sync.syncAccount({ id: account.id });
+      return (await inject('GET', `/mails?filter[accountId]=${account.id}`)).pageData;
+    };
+
+    it('should add or remove Seen flag and move trashed mails on the server', async () => {
+      fastify = await createFastify();
+      account = await createAccount();
+      const mails = await syncMails(2);
+      const { operations, mailboxes } = fastify.testContext.imap.state;
+      const ids = mails.map(item => item.id);
+
+      await inject('POST', '/mails/read', { ids, isRead: true });
+      expect(operations[0]).to.deep.include({ type: 'flagsAdd', flags: ['\\Seen'] });
+      expect(operations[0].uids.sort()).to.deep.equal([1, 2]);
+
+      await inject('POST', '/mails/read', { ids, isRead: true });
+      expect(operations, 'unchanged mails are not written back').to.have.length(1);
+
+      await inject('POST', '/mails/read', { ids: [ids[0]], isRead: false });
+      expect(operations[1]).to.deep.include({ type: 'flagsRemove', flags: ['\\Seen'] });
+
+      await inject('POST', '/mails/trash', { ids: [ids[0]] });
+      expect(operations[2]).to.deep.include({ type: 'move', destination: 'Trash' });
+
+      mailboxes.splice(1, 1);
+      await inject('POST', '/mails/trash', { ids: [ids[1]] });
+      expect(operations[3]).to.deep.include({ type: 'flagsAdd', flags: ['\\Deleted'] });
+    });
+
+    it('should mark Seen when opening a mail and skip write back when disabled', async () => {
+      fastify = await createFastify();
+      account = await createAccount();
+      const [mail] = await syncMails(1);
+      await inject('GET', `/mails/${mail.id}`);
+      await new Promise(resolve => setTimeout(resolve, 20));
+      expect(fastify.testContext.imap.state.operations[0]).to.deep.include({ type: 'flagsAdd', uids: [1] });
+
+      await fastify.close();
+      fastify = await createFastify({ syncFlagsToServer: false });
+      account = await createAccount();
+      const mails = await syncMails(1);
+      await inject('POST', '/mails/read', { ids: mails.map(item => item.id) });
+      await inject('POST', '/mails/trash', { ids: mails.map(item => item.id) });
+      expect(fastify.testContext.imap.state.operations).to.have.length(0);
+    });
+
+    it('should keep local state when the server write back fails', async () => {
+      fastify = await createFastify();
+      account = await createAccount();
+      const mails = await syncMails(1);
+      fastify.testContext.imap.state.connectError = new Error('imap down');
+      await inject('POST', '/mails/read', { ids: mails.map(item => item.id) });
+      expect((await inject('GET', `/mails/stats?accountId=${account.id}`)).folders.inbox.unread).to.equal(0);
+    });
+  });
+
+  describe('定时规则', () => {
+    let account;
+    let batches;
+
+    const expectRejected = async (promise, pattern) => {
+      try {
+        await promise;
+        expect.fail('should reject');
+      } catch (e) {
+        expect(e.message).to.match(pattern);
+      }
+    };
+
+    const syncMails = async subjects => {
+      for (const subject of subjects) {
+        await fastify.testContext.imap.addMessage({ subject, messageId: `<${encodeURIComponent(subject)}@x>`, from: '客户 <customer@example.com>', text: `${subject} 的正文` });
+      }
+      await fastify.mailGateway.services.sync.syncAccount({ id: account.id });
+    };
+
+    const scheduleRule = body =>
+      inject('POST', '/rules', Object.assign({ name: '未读汇总', direction: 'schedule', trigger: { windowDays: 1, minCount: 3 }, actions: [{ type: 'digestForward', params: { to: ['boss@example.com'] } }, { type: 'markRead' }] }, body));
+
+    beforeEach(async () => {
+      batches = [];
+      fastify = await createFastify({
+        actions: {
+          collectBatch: {
+            label: '收集批次',
+            directions: ['schedule'],
+            handler: async ({ mail, mails }) => {
+              batches.push({ mail, subjects: mails.map(item => item.subject) });
+            }
+          }
+        }
+      });
+      account = await createAccount();
+    });
+
+    it('should validate trigger and only offer schedule actions', async () => {
+      await expectRejected(scheduleRule({ trigger: { minCount: 3 } }), /统计时间窗口/);
+      await expectRejected(scheduleRule({ trigger: { windowDays: 1, minCount: 0 } }), /不能小于 1/);
+      await expectRejected(scheduleRule({ actions: [{ type: 'addLabel', params: { labelIds: ['1'] } }] }), /不支持/);
+      const rule = await scheduleRule();
+      expect(rule.trigger).to.deep.equal({ windowDays: 1, minCount: 3, cooldownMinutes: 1440 });
+      const receiveRule = await inject('POST', '/rules', { name: 'r', direction: 'receive', trigger: { windowDays: 1, minCount: 1 } });
+      expect(receiveRule.trigger).to.equal(null);
+
+      const actions = (await inject('GET', '/actions?direction=schedule')).map(item => item.type);
+      expect(actions).to.include.members(['digestForward', 'markRead', 'moveToTrash', 'collectBatch']);
+      expect(actions).to.not.include.members(['addLabel', 'forward', 'autoReply', 'star']);
+      expect((await inject('GET', '/actions?direction=receive')).map(item => item.type)).to.not.include('digestForward');
+      await expectRejected(inject('POST', `/rules/${rule.id}/execute`, { mailId: '1' }), /不支持对单封邮件手动执行/);
+    });
+
+    it('should digest, forward and mark unread mails as read when the threshold is reached', async () => {
+      await scheduleRule();
+      await syncMails(['邮件A', '邮件B']);
+      expect(await fastify.mailGateway.services.schedule.runAll()).to.have.length(0);
+
+      await syncMails(['邮件C']);
+      const [execution] = await fastify.mailGateway.services.schedule.runAll();
+      expect(execution.status).to.equal('success');
+      const sent = fastify.testContext.sentMails[0];
+      expect(sent.subject).to.equal('未读邮件汇总（3 封）');
+      expect(sent.to.map(item => item.address)).to.deep.equal(['boss@example.com']);
+      expect(sent.headers).to.include({ 'Auto-Submitted': 'auto-generated' });
+      ['邮件A', '邮件B', '邮件C', '邮件A 的正文', 'customer@example.com'].forEach(text => expect(sent.html).to.include(text));
+
+      expect((await inject('GET', `/mails/stats?accountId=${account.id}`)).folders.inbox.unread).to.equal(0);
+      const seen = fastify.testContext.imap.state.operations.find(item => item.type === 'flagsAdd');
+      expect(seen.uids.sort()).to.deep.equal([1, 2, 3]);
+
+      const logs = await inject('GET', '/rule-logs?filter[direction]=schedule');
+      expect(logs.totalCount).to.equal(1);
+      expect(logs.pageData[0].mailId).to.equal(null);
+      expect(logs.pageData[0].mailIds).to.have.length(3);
+      expect(logs.pageData[0].results[0].output).to.include({ count: 3 });
+
+      await syncMails(['邮件D', '邮件E', '邮件F']);
+      expect(await fastify.mailGateway.services.schedule.runAll(), 'cooldown').to.have.length(0);
+    });
+
+    it('should filter mails by conditions and time window and honor cooldown', async () => {
+      await scheduleRule({
+        trigger: { windowDays: 1, minCount: 2, cooldownMinutes: 10 },
+        conditions: { items: [{ field: 'subject', operator: 'contains', value: '告警' }] },
+        actions: [{ type: 'collectBatch' }]
+      });
+      await syncMails(['告警1', '普通', '告警2']);
+      const now = new Date();
+      await fastify.mailGateway.services.schedule.runAll({ now });
+      expect(batches).to.have.length(1);
+      expect(batches[0]).to.deep.equal({ mail: null, subjects: ['告警1', '告警2'] });
+
+      await fastify.mailGateway.services.schedule.runAll({ now: new Date(now.getTime() + 5 * 60 * 1000) });
+      expect(batches, 'still in cooldown').to.have.length(1);
+      await fastify.mailGateway.services.schedule.runAll({ now: new Date(now.getTime() + 11 * 60 * 1000) });
+      expect(batches, 'unread mails trigger again after cooldown').to.have.length(2);
+
+      await fastify.mailGateway.services.schedule.runAll({ now: new Date(now.getTime() + 25 * 60 * 60 * 1000) });
+      expect(batches, 'mails out of time window').to.have.length(2);
+    });
+
+    it('should move digested mails to trash and skip disabled rules or other users', async () => {
+      const rule = await scheduleRule({ trigger: { windowDays: 1, minCount: 1 }, actions: [{ type: 'moveToTrash' }] });
+      await inject('POST', `/rules/${rule.id}/status`, { status: 'disabled' });
+      await syncMails(['邮件A']);
+      expect(await fastify.mailGateway.services.schedule.runAll()).to.have.length(0);
+
+      await fastify.mailGateway.models.rule.update({ status: 'enabled', userId: '2' }, { where: { id: rule.id } });
+      expect(await fastify.mailGateway.services.schedule.runAll(), 'rule of another user does not touch these mails').to.have.length(0);
+
+      await fastify.mailGateway.models.rule.update({ userId: '1' }, { where: { id: rule.id } });
+      await fastify.mailGateway.services.schedule.runAll();
+      expect((await inject('GET', `/mails/stats?accountId=${account.id}`)).folders.trash.total).to.equal(1);
+      expect(fastify.testContext.imap.state.operations.find(item => item.type === 'move')).to.include({ destination: 'Trash' });
+    });
+  });
+
   describe('邮件模版', () => {
     beforeEach(async () => {
       fastify = await createFastify();
@@ -1003,10 +1234,7 @@ describe('@kne/fastify-mail-gateway', function () {
     beforeEach(async () => {
       templateDir = await fs.mkdtemp(path.join(os.tmpdir(), 'mail-gateway-templates-'));
       await writeFile('customer-service_客服回复/_description.txt', '客户来信的标准回复\n');
-      await writeFile(
-        'customer-service_客服回复/receipt-notice_来信受理通知.html',
-        '<!-- subject -->\n已收到：{{mail.subject}}\n<!-- description -->\n自动回复用\n<!-- html -->\n<p>{{mail.from[0].name}} 您好，已收到来信</p>\n'
-      );
+      await writeFile('customer-service_客服回复/receipt-notice_来信受理通知.html', '<!-- subject -->\n已收到：{{mail.subject}}\n<!-- description -->\n自动回复用\n<!-- html -->\n<p>{{mail.from[0].name}} 您好，已收到来信</p>\n');
       await writeFile('finance_财务通知/invoice-issued_发票已开具.html', '<p>发票已开具</p>');
       await writeFile('signature_通用签名.html', '<p>此致</p>');
       await writeFile('.DS_Store', 'ignored');

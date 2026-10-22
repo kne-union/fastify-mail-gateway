@@ -23,7 +23,7 @@ module.exports = fp(async (fastify, options) => {
   /**
    * 保存草稿：不传 id 新建，传 id 更新
    */
-  const save = async ({ id, accountId, to, cc, bcc, subject, html, attachments, inReplyTo, references, userId }) => {
+  const save = async ({ id, accountId, to, cc, bcc, subject, html, attachments, inReplyTo, references, headers, userId }) => {
     const account = await services.account.detail({ id: accountId, userId });
     const data = {
       accountId,
@@ -41,6 +41,10 @@ module.exports = fp(async (fastify, options) => {
       references: references ? [].concat(references) : null,
       date: new Date()
     };
+    // 规则存入的草稿会带标记头（如已翻译），前端编辑保存不传 headers 时保留
+    if (headers !== undefined) {
+      data.headers = headers;
+    }
     if (id) {
       const draft = await getDraft({ id, userId });
       await draft.update(data);
@@ -70,6 +74,7 @@ module.exports = fp(async (fastify, options) => {
       attachments: draft.attachments,
       inReplyTo: draft.inReplyTo,
       references: draft.references,
+      headers: draft.headers || undefined,
       draftId: draft.id
     });
   };

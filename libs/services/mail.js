@@ -1,4 +1,5 @@
 const fp = require('fastify-plugin');
+const escape = require('lodash/escape');
 const { normalizeAddressList } = require('../utils/address');
 const { stripHtml } = require('../utils/condition');
 const { createError } = require('../utils/error');
@@ -110,12 +111,21 @@ module.exports = fp(async (fastify, options) => {
     if (markRead && !mail.isRead) {
       mail.isRead = true;
       await mail.save();
+      // 打开邮件不等待服务器回写，避免拖慢详情接口
+      services.imapSync.setSeen({ mails: [mail], seen: true });
     }
     return mail;
   };
 
   const assertOwnedMails = async ({ ids, userId }) => {
-    const uniqueIds = [...new Set([].concat(ids || []).filter(Boolean).map(String))];
+    const uniqueIds = [
+      ...new Set(
+        []
+          .concat(ids || [])
+          .filter(Boolean)
+          .map(String)
+      )
+    ];
     const list = uniqueIds.length === 0 ? [] : await models.mail.findAll({ where: { id: uniqueIds } });
     if (list.length !== uniqueIds.length) {
       throw createError('邮件不存在', 404);
@@ -129,8 +139,9 @@ module.exports = fp(async (fastify, options) => {
   };
 
   const setRead = async ({ ids, isRead = true, userId }) => {
-    await assertOwnedMails({ ids, userId });
+    const mails = await assertOwnedMails({ ids, userId });
     await models.mail.update({ isRead }, { where: { id: ids } });
+    await services.imapSync.setSeen({ mails: mails.filter(mail => !!mail.isRead !== !!isRead), seen: isRead });
   };
 
   const setStar = async ({ ids, isStarred = true, userId }) => {
@@ -185,11 +196,14 @@ module.exports = fp(async (fastify, options) => {
   const moveToTrash = async ({ ids, userId }) => {
     await assertOwnedMails({ ids, userId });
     const mails = await models.mail.findAll({ where: { id: ids, folder: { [Op.ne]: 'trash' } } });
+    const serverMails = mails.map(mail => mail.get({ plain: true }));
     for (const mail of mails) {
       mail.originFolder = mail.folder;
       mail.folder = 'trash';
       await mail.save();
     }
+    // 从回收站还原不回写服务器：邮件在服务器上移动后 uid 已变化
+    await services.imapSync.moveToTrash({ mails: serverMails });
   };
 
   const restore = async ({ ids, userId }) => {
@@ -384,7 +398,8 @@ module.exports = fp(async (fastify, options) => {
   };
 
   /**
-   * 发送邮件：beforeSend 钩子 → 发信前规则（可拦截 / 修改）→ SMTP 发送 → 存入已发送 → 发信后规则 → afterSend 钩子
+   * 发送邮件：beforeSend 钩子 → 发信前规则（可拦截 / 修改 / 改存草稿）→ SMTP 发送 → 存入已发送 → 发信后规则 → afterSend 钩子；
+   * 被规则改存草稿时不发送，返回 folder 为 draft 的草稿
    * 传 draftId 时把草稿转为已发送；skipRules 用于自动回复/转发等规则内发信，避免规则循环触发
    */
   const send = async ({ accountId, to, cc, bcc, subject, html, text, attachments = [], inReplyTo, references, headers, draftId, skipRules = false, userId }) => {
@@ -427,9 +442,30 @@ module.exports = fp(async (fastify, options) => {
     let beforeSendLogIds = [];
     if (!skipRules) {
       const outgoing = toOutgoingMail({ mailOptions, account, attachments, draftId });
-      const { mail: modified, logIds } = await services.pipeline.beforeSend({ mail: outgoing, account });
+      const { mail: modified, logIds, draft: toDraft } = await services.pipeline.beforeSend({ mail: outgoing, account });
       mailOptions = applyOutgoingMail(mailOptions, modified, outgoing);
       beforeSendLogIds = logIds;
+      // 发信前规则要求改存草稿：不发送，保存修改后的邮件（folder 为 draft），用户核对后手动发送
+      if (toDraft) {
+        const saved = await services.draft.save({
+          id: draftId,
+          accountId,
+          to: mailOptions.to,
+          cc: mailOptions.cc,
+          bcc: mailOptions.bcc,
+          subject: mailOptions.subject,
+          html: mailOptions.html || escape(mailOptions.text || '').replace(/\n/g, '<br/>'),
+          attachments,
+          inReplyTo,
+          references: referenceList,
+          headers: toHeaderRecord(mailOptions.headers),
+          userId: account.userId
+        });
+        if (beforeSendLogIds.length > 0) {
+          await models.ruleLog.update({ mailId: saved.id }, { where: { id: beforeSendLogIds } });
+        }
+        return saved;
+      }
     }
 
     const transport = services.account.createTransport(services.account.toConnectionConfig(account));

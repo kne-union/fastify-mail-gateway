@@ -30,9 +30,19 @@ const ruleBody = (required = []) => ({
   properties: {
     name: { type: 'string', description: '规则名称' },
     description: { type: 'string', description: '描述' },
-    direction: { type: 'string', enum: DIRECTIONS, description: '触发时机：receive 收信后，beforeSend 发信前，send 发信后' },
+    direction: { type: 'string', enum: DIRECTIONS, description: '触发时机：receive 收信后，beforeSend 发信前，send 发信后，schedule 定时' },
     accountIds: { type: 'array', items: { type: 'string' }, description: '适用邮箱账号，为空表示全部' },
     conditions: conditionsSchema,
+    trigger: {
+      type: 'object',
+      nullable: true,
+      description: '定时规则触发配置，仅 schedule 方向必填：时间窗口内未读邮件达到阈值时触发',
+      properties: {
+        windowDays: { type: 'number', description: '统计时间窗口（天），只统计该时间段内收到的未读邮件' },
+        minCount: { type: 'number', description: '未读邮件数量阈值，达到即触发' },
+        cooldownMinutes: { type: 'number', description: '两次触发的最短间隔（分钟），默认等于时间窗口' }
+      }
+    },
     actions: {
       type: 'array',
       description: '动作 [{ type, params }]',

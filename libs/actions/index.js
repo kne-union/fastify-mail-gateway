@@ -46,6 +46,27 @@ const escapeHtml = value =>
 
 const toMailHtml = mail => mail.html || escapeHtml(mail.text).replace(/\n/g, '<br/>');
 
+const DIGEST_SNIPPET_LENGTH = 200;
+
+const toSnippet = mail =>
+  String(mail.text || String(mail.html || '').replace(/<[^>]+>/g, ' '))
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, DIGEST_SNIPPET_LENGTH);
+
+const formatDate = date => (date ? new Date(date).toISOString().replace('T', ' ').slice(0, 16) : '');
+
+/**
+ * 汇总邮件列表：逐封列出发件人、时间、主题与正文片段
+ */
+const buildDigestHtml = mails =>
+  `<ol>${mails
+    .map(mail => `<li><p><strong>${escapeHtml(mail.subject || '（无主题）')}</strong><br/>${escapeHtml(formatAddressList(mail.from))} · ${escapeHtml(formatDate(mail.date))}</p><p>${escapeHtml(toSnippet(mail))}</p></li>`)
+    .join('')}</ol>`;
+
+// 批量动作：定时规则处理 mails，其它方向处理单封 mail
+const targetIds = ({ mail, mails }) => (mails ? mails.map(item => item.id) : [mail.id]);
+
 // webhook 在发信前可返回 { block, mail } 拦截或修改邮件
 const readWebhookDecision = async response => {
   if (!String(response.headers.get('content-type') || '').includes('application/json')) {
@@ -78,9 +99,12 @@ module.exports = ({ register, createFormSchema }) => {
   register('markRead', {
     builtIn: true,
     label: '标为已读',
-    directions: ['receive'],
-    handler: async ({ mail, account, services }) => {
-      await services.mail.setRead({ ids: [mail.id], isRead: true, userId: account && account.userId });
+    description: '把邮件标为已读，并同步到邮件服务器；未读邮件规则中处理本次统计到的全部邮件',
+    directions: ['receive', 'schedule'],
+    handler: async ({ mail, mails, account, services }) => {
+      const ids = targetIds({ mail, mails });
+      await services.mail.setRead({ ids, isRead: true, userId: account && account.userId });
+      return mails ? { count: ids.length } : undefined;
     }
   });
 
@@ -95,8 +119,12 @@ module.exports = ({ register, createFormSchema }) => {
   register('moveToTrash', {
     builtIn: true,
     label: '移入回收站',
-    handler: async ({ mail, account, services }) => {
-      await services.mail.moveToTrash({ ids: [mail.id], userId: account && account.userId });
+    description: '把邮件移入回收站，并同步到邮件服务器；未读邮件规则中处理本次统计到的全部邮件',
+    directions: ['receive', 'send', 'schedule'],
+    handler: async ({ mail, mails, account, services }) => {
+      const ids = targetIds({ mail, mails });
+      await services.mail.moveToTrash({ ids, userId: account && account.userId });
+      return mails ? { count: ids.length } : undefined;
     }
   });
 
@@ -188,6 +216,36 @@ module.exports = ({ register, createFormSchema }) => {
         skipRules: true
       });
       return { forwardMailId: forwarded.id };
+    }
+  });
+
+  register('digestForward', {
+    builtIn: true,
+    label: '汇总转发',
+    description: '未读邮件规则中把本次统计到的未读邮件汇总成一封邮件（逐封列出发件人、时间、主题和正文片段），用当前邮箱发给指定地址；主题支持 {{count}}、{{account.name}} 等变量',
+    directions: ['schedule'],
+    formSchema: createFormSchema([
+      { type: 'MailContactSelect', name: 'to', label: '转发给', rule: 'REQ' },
+      { type: 'MailTemplateText', name: 'subject', label: '主题', props: { defaultValue: '未读邮件汇总（{{count}} 封）' } },
+      { type: 'TextArea', name: 'comment', label: '附言', props: { rows: 3 } }
+    ]),
+    handler: async ({ mails, account, params, services }) => {
+      const list = mails || [];
+      if (list.length === 0) {
+        return { skipped: true, reason: '没有需要汇总的邮件' };
+      }
+      const comment = params.comment ? `<p>${escapeHtml(params.comment).replace(/\n/g, '<br/>')}</p>` : '';
+      const data = { count: list.length, account };
+      const sent = await services.mail.send({
+        userId: account && account.userId,
+        accountId: account.id,
+        to: params.to,
+        subject: renderTemplate(params.subject || '未读邮件汇总（{{count}} 封）', data),
+        html: comment + buildDigestHtml(list),
+        headers: { 'Auto-Submitted': 'auto-generated' },
+        skipRules: true
+      });
+      return { digestMailId: sent.id, count: list.length };
     }
   });
 
@@ -294,8 +352,7 @@ module.exports = ({ register, createFormSchema }) => {
   register('webhook', {
     builtIn: true,
     label: '调用 Webhook',
-    description:
-      'POST JSON 到指定地址，可选用 secret 对请求体做 HMAC-SHA256 签名（请求头 X-Mail-Gateway-Signature）；发信前规则中，接口返回 JSON { block, mail } 可拦截或修改邮件',
+    description: 'POST JSON 到指定地址，可选用 secret 对请求体做 HMAC-SHA256 签名（请求头 X-Mail-Gateway-Signature）；发信前规则中，接口返回 JSON { block, mail } 可拦截或修改邮件',
     directions: ['receive', 'beforeSend', 'send'],
     formSchema: createFormSchema([
       { type: 'Input', name: 'url', label: '地址', rule: 'REQ' },
@@ -324,3 +381,4 @@ module.exports = ({ register, createFormSchema }) => {
 };
 
 module.exports.shouldSkipAutoReply = shouldSkipAutoReply;
+module.exports.buildDigestHtml = buildDigestHtml;

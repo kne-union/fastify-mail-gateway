@@ -7,6 +7,8 @@
 | dbTableNamePrefix | string | 否 | `'t_'` | 表名前缀，实际表名如 `t_mail_gateway_mail` |
 | syncCronTime | string / false | 否 | `'*/5 * * * *'` | 定时同步 cron 表达式，`false` 关闭定时同步 |
 | syncBatchSize | number | 否 | `50` | 每个邮箱每次同步最多拉取的邮件数 |
+| scheduleCronTime | string / false | 否 | `'*/5 * * * *'` | 未读邮件规则（`direction: 'schedule'`）的检查频率，`false` 关闭 |
+| syncFlagsToServer | boolean | 否 | `true` | 标为已读 / 未读、移入回收站时是否回写 IMAP 服务器 |
 | inboxPath | string | 否 | `'INBOX'` | IMAP 收件箱路径 |
 | secretKey | string | 否 | `null` | 邮箱密码加密密钥；未设置时使用内置默认密钥并打印警告，生产环境务必配置 |
 | templateDir | string | 否 | `null` | 系统默认模版目录，数据库同步完成后载入，格式见「系统默认模版」；目录不存在时跳过 |
@@ -131,6 +133,8 @@
 | `DELETE /drafts/{id}` | 删除草稿 |
 | `POST /drafts/{id}/send` | 发送草稿；body 中的字段会先保存再发送 |
 
+`POST /mails/send` 与 `POST /drafts/{id}/send` 被发信前规则改存草稿时不发送，返回 `folder` 为 `draft` 的草稿（从草稿发送时更新原草稿）。
+
 #### 标签
 
 | 方法 路径 | 说明 |
@@ -199,6 +203,20 @@
 
 `details` 与 `items` 顺序一致；扩展条件项带 `label`，以及 `reason`（判断理由）、`logs`、`error`（判断失败时）、`skipped`（结果已确定而跳过）。
 
+**未读邮件规则**：`direction` 为 `schedule` 时必填 `trigger`，按 `scheduleCronTime` 定时检查：统计各适用邮箱在 `windowDays` 天内收到的收件箱未读邮件（再按 `conditions` 逐封过滤，条件为空表示全部计入），达到 `minCount` 封时把这批邮件交给动作处理；两次触发至少间隔 `cooldownMinutes` 分钟（默认等于时间窗口，即 `windowDays × 1440`）。可用动作需声明 `schedule`，内置 `digestForward`（汇总转发）、`markRead`、`moveToTrash`。未读邮件规则不支持对单封邮件手动执行。
+
+```json
+{
+  "name": "未读汇总",
+  "direction": "schedule",
+  "trigger": { "windowDays": 1, "minCount": 10, "cooldownMinutes": 60 },
+  "actions": [
+    { "type": "digestForward", "params": { "to": ["boss@example.com"], "subject": "未读邮件汇总（{{count}} 封）" } },
+    { "type": "markRead" }
+  ]
+}
+```
+
 #### 邮件模版
 
 | 方法 路径 | 说明 |
@@ -259,7 +277,8 @@
 | `label.list({ accountId })` | 标签列表 |
 | `rule.create(data)` / `rule.test({ id, mailId })` / `rule.execute({ id, mailId })` | 新建规则 / 试运行 / 手动执行（命中才执行动作；发信前规则不支持手动执行） |
 | `pipeline.run({ direction, mail, account })` | 对一封邮件执行规则，返回命中规则的执行结果 |
-| `pipeline.beforeSend({ mail, account })` | 执行发信前规则，返回 `{ mail, logIds }`（修改后的邮件）；被拦截或动作出错时抛错 |
+| `pipeline.beforeSend({ mail, account })` | 执行发信前规则，返回 `{ mail, logIds, draft }`（修改后的邮件，`draft` 表示改存草稿）；被拦截或动作出错时抛错 |
+| `schedule.runAll({ now })` / `schedule.runRule({ rule, now })` | 执行全部启用的未读邮件规则 / 单条未读邮件规则，返回执行结果列表 |
 | `template.list(...)` / `template.detail({ id })` | 模版列表 / 详情 |
 | `template.render({ id, template, mailId, accountId, data })` | 渲染模版，返回 `{ subject, html }` |
 | `template.includeTemplate(dir)` | 从目录载入系统默认分类与模版，串行执行，可重复调用 |
@@ -301,7 +320,7 @@ fastify.mailGateway.services.action.register('createTicket', {
 |------|------|------|------|------|
 | label | string | 否 | type | 显示名称 |
 | description | string | 否 | `''` | 说明 |
-| directions | array | 否 | `['receive', 'send']` | 支持的触发时机：`receive` 收信后、`beforeSend` 发信前、`send` 发信后；发信前需显式声明 |
+| directions | array | 否 | `['receive', 'send']` | 支持的触发时机：`receive` 收信后、`beforeSend` 发信前、`send` 发信后、`schedule` 未读邮件（定时检查）；发信前、未读邮件需显式声明 |
 | formSchema | object | 否 | - | 参数子表单，`@kne/form-creator` 搭建 Schema，前端用 `SchemaRendererInner` 渲染，字段值即 `params`；不传表示无参数 |
 | validate | function | 否 | - | `params => void`，参数间有依赖时抛错，保存规则和执行前都会调用 |
 | handler | function | 是 | - | 执行函数，抛出异常视为该动作失败 |
@@ -312,6 +331,9 @@ fastify.mailGateway.services.action.register('createTicket', {
 |------|------|
 | `mail` | 修改邮件，可含 `subject`、`html`、`text`、`to`、`cc`、`bcc`、`headers`；后续动作拿到的是修改后的邮件；只改 `html` 时自动重算纯文本，`headers` 为追加的请求头 |
 | `block` | `true` 或拦截原因字符串，拦截发送；同一规则的其它动作仍会执行（可先通知再拦截） |
+| `draft` | `true` 时不发送，把（修改后的）邮件存入草稿箱，由用户核对后手动发送；`mail.headers` 会随草稿保存，可用作标记避免手动发送时重复处理 |
+
+**未读邮件动作**：`directions` 含 `schedule` 的动作由未读邮件规则调用，`mail` 为 `null`，`mails` 为本次统计到的未读邮件（按时间升序），`account` 为所属邮箱。
 
 任一发信前动作抛错即停止后续动作并中止发送，接口返回 400 和错误原因。
 
@@ -504,7 +526,9 @@ templates/
 | 属性名 | 类型 | 说明 |
 |------|------|------|
 | name / description | string | 名称 / 描述 |
-| direction | string | 触发时机：`receive` 收信后 / `beforeSend` 发信前 / `send` 发信后 |
+| direction | string | 触发时机：`receive` 收信后 / `beforeSend` 发信前 / `send` 发信后 / `schedule` 未读邮件（定时检查） |
+| trigger | object | 未读邮件规则触发配置 `{ windowDays, minCount, cooldownMinutes }`，其它方向为空 |
+| lastTriggeredAt | date | 未读邮件规则最近一次触发时间 |
 | accountIds | array | 适用邮箱，为空表示全部 |
 | conditions | object | 条件，`items` 为内置条件 `{ field, operator, value }` 或扩展条件 `{ type, params }` |
 | actions | array | 动作 |
@@ -546,7 +570,8 @@ templates/
 
 | 属性名 | 类型 | 说明 |
 |------|------|------|
-| ruleId / mailId / accountId | string | 规则 / 邮件 / 邮箱；发信前规则拦截的邮件未入库，`mailId` 为空（发送成功后回填） |
+| ruleId / mailId / accountId | string | 规则 / 邮件 / 邮箱；发信前规则拦截的邮件未入库，`mailId` 为空（发送成功或改存草稿后回填）；未读邮件规则 `mailId` 为空 |
+| mailIds | array | 未读邮件规则本次处理的邮件 id |
 | direction | string | 触发时机 |
 | status | string | `success` / `partial` / `failed` |
 | results | array | `[{ type, success, output, logs, error }]` |
@@ -560,8 +585,8 @@ templates/
 
 > **发信前出错不放行**：发信前规则用于拦截和修改，动作出错或被拦截时中止发送并把原因返回给发件人，草稿保留。
 
-> **规则内发信不再触发规则**：`autoReply`、`forward` 内部发信使用 `skipRules: true`，不执行发信前 / 发信后规则，避免规则互相触发形成循环。
+> **规则内发信不再触发规则**：`autoReply`、`forward`、`digestForward` 内部发信使用 `skipRules: true`，不执行发信前 / 发信后规则，避免规则互相触发形成循环。
 
-> **存量库升级**：`rule.direction`、`ruleLog.direction` 新增 `beforeSend` 枚举值，`ruleLog.mailId` 改为可空；`sequelize.sync` 不会修改已有表，升级前需在数据库执行对应的 ALTER（Postgres 为 `ALTER TYPE ... ADD VALUE 'beforeSend'` 与 `ALTER COLUMN mail_id DROP NOT NULL`）。
+> **存量库升级**：`rule.direction`、`ruleLog.direction` 新增 `beforeSend`、`schedule` 枚举值，`ruleLog.mailId` 改为可空；`sequelize.sync` 不会修改已有表，升级前需在数据库执行对应的 ALTER（Postgres 为 `ALTER TYPE ... ADD VALUE 'beforeSend'` / `ADD VALUE 'schedule'` 与 `ALTER COLUMN mail_id DROP NOT NULL`）。新增列 `rule.trigger`、`rule.last_triggered_at`、`ruleLog.mail_ids` 在启动时自动补齐。
 
-> **只操作本地数据**：已读、星标、标签、回收站、删除只修改本地记录，不回写邮件服务器。
+> **回写邮件服务器**：已读 / 未读（`\Seen` 标记）和移入回收站（移入服务器 special-use `\Trash` 文件夹，没有时打 `\Deleted` 标记）会回写 IMAP，只处理收件箱中带 uid 的邮件；回写失败只记日志，不回滚本地状态。打开邮件详情自动标已读时不等待回写。从回收站还原、星标、标签、彻底删除只修改本地记录；`syncFlagsToServer: false` 可关闭回写。

@@ -9,7 +9,10 @@ const createMockImapFactory = () => {
     uidValidity: 1,
     messages: [],
     connectError: null,
-    clients: []
+    clients: [],
+    // 服务器文件夹列表与标记 / 移动操作记录
+    mailboxes: [{ path: 'INBOX' }, { path: 'Trash', specialUse: '\\Trash' }],
+    operations: []
   };
 
   const addMessage = async mail => {
@@ -40,6 +43,19 @@ const createMockImapFactory = () => {
             yield { uid: message.uid, source: message.source, size: message.source.length };
           }
         }
+      },
+      list: async () => state.mailboxes,
+      messageFlagsAdd: async (uids, flags, opts) => {
+        state.operations.push({ type: 'flagsAdd', uids, flags, opts });
+        return true;
+      },
+      messageFlagsRemove: async (uids, flags, opts) => {
+        state.operations.push({ type: 'flagsRemove', uids, flags, opts });
+        return true;
+      },
+      messageMove: async (uids, destination, opts) => {
+        state.operations.push({ type: 'move', uids, destination, opts });
+        return true;
       },
       logout: async () => {}
     };

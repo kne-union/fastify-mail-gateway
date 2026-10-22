@@ -16,7 +16,15 @@ module.exports = ({ DataTypes, options }) => {
         type: DataTypes.ENUM(...DIRECTIONS),
         allowNull: false,
         defaultValue: 'receive',
-        comment: '触发时机：receive 收信后，beforeSend 发信前（可拦截或修改），send 发信后'
+        comment: '触发时机：receive 收信后，beforeSend 发信前（可拦截或修改），send 发信后，schedule 定时'
+      },
+      trigger: {
+        type: DataTypes.JSON,
+        comment: '定时规则触发配置 { windowDays, minCount, cooldownMinutes }，仅 schedule 方向使用'
+      },
+      lastTriggeredAt: {
+        type: DataTypes.DATE,
+        comment: '定时规则最近一次触发时间'
       },
       accountIds: {
         type: DataTypes.JSON,
