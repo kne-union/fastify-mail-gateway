@@ -374,6 +374,25 @@ describe('@kne/fastify-mail-gateway', function () {
       expect(stats.folders.sent.total).to.equal(1);
     });
 
+    it('should ignore id when creating draft and keep the existing draft unchanged', async () => {
+      const draft = await inject('POST', '/drafts', { accountId: account.id, to: 'a@x.com', subject: '原草稿' });
+      const created = await inject('POST', '/drafts', { id: draft.id, accountId: account.id, to: 'b@x.com', subject: '新草稿' });
+      expect(created.id).to.not.equal(draft.id);
+      expect(created.subject).to.equal('新草稿');
+      expect((await inject('GET', `/mails/${draft.id}`)).subject).to.equal('原草稿');
+      expect((await inject('GET', `/mails/stats?accountId=${account.id}`)).folders.draft.total).to.equal(2);
+    });
+
+    it('should ignore draftId when sending mail directly', async () => {
+      const draft = await inject('POST', '/drafts', { accountId: account.id, to: 'a@x.com', subject: '草稿' });
+      const sent = await inject('POST', '/mails/send', { accountId: account.id, to: 'a@x.com', subject: '直接发送', html: 'x', draftId: draft.id });
+      expect(sent.folder).to.equal('sent');
+      expect(sent.id).to.not.equal(draft.id);
+      const kept = await inject('GET', `/mails/${draft.id}`);
+      expect(kept.folder).to.equal('draft');
+      expect(kept.subject).to.equal('草稿');
+    });
+
     it('should apply beforeSend and afterSend hooks', async () => {
       await fastify.close();
       const after = [];
@@ -904,6 +923,13 @@ describe('@kne/fastify-mail-gateway', function () {
       const tested = await inject('POST', '/rules/test', { id: rule.id, mailId: sentMail.id });
       expect(tested.matched).to.equal(true);
     });
+
+    it('should not let http callers skip send rules', async () => {
+      await inject('POST', '/rules', { name: '全部拦截', direction: 'beforeSend', actions: [{ type: 'inspect' }, { type: 'blockSend', params: { message: '禁止外发' } }] });
+      await expectRejected(send({ skipRules: true }), /禁止外发/);
+      expect(calls).to.have.length(1);
+      expect(fastify.testContext.sentMails).to.have.length(0);
+    });
   });
 
   describe('发信前规则改存草稿', () => {
@@ -1425,8 +1451,13 @@ describe('@kne/fastify-mail-gateway', function () {
       const draft = await asUser('1', 'POST', '/drafts', { accountId: account.id, to: 'a@x.com', subject: '草稿', html: '<p>secret</p>' });
       const otherAccount = await asUser('2', 'POST', '/accounts', accountPayload({ address: 'other-user@test.local', username: 'other-user@test.local' }));
       expect(otherAccount.isDefault).to.equal(true);
-      const stolen = await asUser('2', 'POST', '/mails/send', { accountId: otherAccount.id, to: 'a@x.com', subject: 'x', html: 'x', draftId: draft.id }).catch(e => e);
-      expect(stolen.statusCode).to.equal(404);
+      const sent = await asUser('2', 'POST', '/mails/send', { accountId: otherAccount.id, to: 'a@x.com', subject: 'x', html: 'x', draftId: draft.id });
+      expect(sent.id).to.not.equal(draft.id);
+      const overwritten = await asUser('2', 'POST', '/drafts', { id: draft.id, accountId: otherAccount.id, subject: '覆盖' });
+      expect(overwritten.id).to.not.equal(draft.id);
+      const kept = await asUser('1', 'GET', `/mails/${draft.id}`);
+      expect(kept.folder).to.equal('draft');
+      expect(kept.subject).to.equal('草稿');
       const hiddenMail = await asUser('2', 'GET', `/mails/${draft.id}`).catch(e => e);
       expect(hiddenMail.statusCode).to.equal(404);
     });
