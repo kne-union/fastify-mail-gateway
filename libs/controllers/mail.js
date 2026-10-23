@@ -1,4 +1,5 @@
 const fp = require('fastify-plugin');
+const pick = require('lodash/pick');
 const { idParams, idsBody, pageQuery, addressField, attachmentsField } = require('../utils/schema');
 const { userIdOf } = require('../utils/owner');
 const { num, any, str, obj, arr, success, empty, mail, mailListItem, attachment, page } = require('../schema/response');
@@ -22,6 +23,10 @@ const composeProperties = {
 const sendProperties = Object.assign({}, composeProperties, {
   text: { description: '纯文本正文，不传时由 HTML 正文生成' }
 });
+
+// 只把 schema 声明的字段传给 service，skipRules、draftId 等内部参数不允许由请求设置
+const sendFields = Object.keys(sendProperties);
+const composeFields = Object.keys(composeProperties);
 
 const sendResponse = success('发送成功返回已发送邮件（folder 为 sent）；被发信前规则改存草稿时不发送，返回 folder 为 draft 的草稿', mail);
 
@@ -212,12 +217,13 @@ module.exports = fp(async (fastify, options) => {
       schema: {
         tags: [TAG],
         summary: '发送邮件',
-        description: '通过指定邮箱的 SMTP 发送邮件：依次执行 beforeSend 钩子、发信前规则（可拦截、修改或改存草稿）、发送、存入已发送、发信后规则和 afterSend 钩子',
+        description:
+          '通过指定邮箱的 SMTP 发送邮件：依次执行 beforeSend 钩子、发信前规则（可拦截、修改或改存草稿）、发送、存入已发送、发信后规则和 afterSend 钩子；只接受下列声明的字段，其余字段（如 skipRules、draftId）会被忽略，发送草稿请用 POST /drafts/:id/send',
         body: { type: 'object', required: ['accountId', 'to'], properties: sendProperties },
         response: sendResponse
       }
     },
-    async request => await services.mail.send(Object.assign({}, request.body, { userId: userIdOf(request) }))
+    async request => await services.mail.send(Object.assign(pick(request.body, sendFields), { userId: userIdOf(request) }))
   );
 
   fastify.post(
@@ -227,12 +233,12 @@ module.exports = fp(async (fastify, options) => {
       schema: {
         tags: [DRAFT_TAG],
         summary: '新建草稿',
-        description: '保存为草稿（folder 为 draft），纯文本正文由 HTML 生成',
+        description: '保存为草稿（folder 为 draft），纯文本正文由 HTML 生成；始终新建，body 中的 id 等未声明字段会被忽略，更新草稿请用 PUT /drafts/:id',
         body: { type: 'object', required: ['accountId'], properties: composeProperties },
         response: success('新建的草稿', mail)
       }
     },
-    async request => await services.draft.save(Object.assign({}, request.body, { userId: userIdOf(request) }))
+    async request => await services.draft.save(Object.assign(pick(request.body, composeFields), { userId: userIdOf(request) }))
   );
 
   fastify.put(
