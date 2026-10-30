@@ -131,7 +131,7 @@ module.exports = ({ register, createFormSchema }) => {
   register('autoReply', {
     builtIn: true,
     label: '自动回复',
-    description: '用当前邮箱回复发件人。可选择邮件模版或直接填写回复内容，支持 {{mail.subject}}、{{mail.from[0].name}}、{{account.name}} 等变量；自动跳过自动生成邮件、邮件列表和 no-reply 发件人',
+    description: '用当前邮箱回复发件人。可选择邮件模版或直接填写回复内容，支持 {{ mail.subject }}、{{ mail.from.first.name }}、{{ account.name }} 等 Liquid 变量与条件；自动跳过自动生成邮件、邮件列表和 no-reply 发件人',
     directions: ['receive'],
     formSchema: createFormSchema([
       { type: 'MailTemplateSelect', name: 'templateId', label: '邮件模版', description: '选择模版后使用模版的主题与正文，模版主题为空时使用下方回复主题' },

@@ -2,7 +2,7 @@ const { expect } = require('chai');
 const { evaluateItem } = require('../libs/utils/condition');
 const { normalizeAddressList } = require('../libs/utils/address');
 const { encrypt, decrypt } = require('../libs/utils/crypto');
-const { renderTemplate } = require('../libs/utils/template');
+const { renderTemplate, validateTemplate } = require('../libs/utils/template');
 const { shouldSkipAutoReply } = require('../libs/actions');
 
 describe('@kne/fastify-mail-gateway 工具函数', () => {
@@ -65,6 +65,21 @@ describe('@kne/fastify-mail-gateway 工具函数', () => {
       expect(renderTemplate('Re: {{mail.subject}}', { mail: { subject: 'Hi' } })).to.equal('Re: Hi');
       expect(renderTemplate('<p>{{name}}</p>', { name: '<b>x</b>' }, { html: true })).to.equal('<p>&lt;b&gt;x&lt;/b&gt;</p>');
       expect(renderTemplate('{{missing}}-{{ constructor }}', {})).to.equal('-');
+    });
+
+    it('should support liquid conditions and keep text mode unescaped', () => {
+      const data = { mail: { subject: '<b>Hi</b>', attachments: [{ filename: 'a.pdf' }] } };
+      expect(renderTemplate('{% if mail.attachments.size > 0 %}有附件{% else %}无附件{% endif %}', data)).to.equal('有附件');
+      expect(renderTemplate('Re: {{ mail.subject }}', data)).to.equal('Re: <b>Hi</b>');
+      expect(renderTemplate('{{ mail.from[0].name }}', { mail: { from: [{ name: '张&三' }] } }, { html: true })).to.equal('张&amp;三');
+    });
+
+    it('should validate template syntax', () => {
+      expect(validateTemplate('<p>{% if a %}x{% endif %}{{ b }}</p>')).to.equal(null);
+      expect(validateTemplate('<p>{% if a %}x</p>')).to.be.a('string');
+      expect(validateTemplate('')).to.equal(null);
+      expect(validateTemplate('{{mail.from[0].name}} {{ mail.from.first.address }}')).to.equal(null);
+      expect(renderTemplate('{{ mail.from.first.name }}', { mail: { from: [{ name: '王' }] } })).to.equal('王');
     });
   });
 

@@ -11,11 +11,11 @@ module.exports = ({ DataTypes, definePrimaryType, options }) => {
       },
       subject: {
         type: DataTypes.STRING(1000),
-        comment: '邮件主题，支持 {{mail.subject}} 等变量'
+        comment: '邮件主题（Liquid），支持 {{ mail.subject }} 等变量'
       },
       html: {
         type: DataTypes.TEXT,
-        comment: '富文本正文，支持 {{mail.from[0].name}}、{{account.name}} 等变量'
+        comment: '富文本正文（Liquid），支持 {{ mail.from.first.name }}、{{ account.name }} 等变量与 {% if %} 条件'
       },
       description: {
         type: DataTypes.TEXT,

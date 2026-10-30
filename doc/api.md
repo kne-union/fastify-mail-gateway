@@ -233,7 +233,7 @@
 | `DELETE /templates/{id}` | 删除模版；系统默认模版返回 403（可停用） |
 | `POST /templates/{id}/status` | 启停（系统默认模版也可启停）；停用后规则中引用该模版的自动回复会失败并记入日志 |
 | `POST /templates/{id}/copy` | 复制为停用状态的自定义副本；需要改系统默认模版时复制后修改副本 |
-| `POST /templates/render` | 渲染模版，返回 `{ subject, html }` |
+| `POST /templates/render` | 渲染模版，返回 `{ subject, html }`；语法错误返回 400 |
 
 渲染请求体：
 
@@ -245,7 +245,7 @@
 | accountId | string | 否 | 邮件所属邮箱 | 提供 `account` 变量 |
 | data | object | 否 | `{}` | 额外变量，如 `{{name}}` |
 
-模版变量写法为 `{{path}}`，如 `{{mail.subject}}`、`{{mail.from[0].name}}`、`{{account.name}}`；只做取值替换不执行表达式，正文中的变量值会做 HTML 转义，缺失变量替换为空。
+模版基于 Liquid 子集（[@kne/message-template](https://www.npmjs.com/package/@kne/message-template)）：变量写法为 `{{ path }}`，如 `{{ mail.subject }}`、`{{ mail.from.first.name }}`、`{{ account.name }}`（旧写法 `{{mail.from[0].name}}` 仍兼容）；条件写法为 `{% if mail.attachments.size > 0 %}…{% else %}…{% endif %}`。只读取数据自有属性，正文中的变量值会做 HTML 转义，缺失变量输出为空。模版新建、修改及规则动作中的模版参数（`MailTemplateText`、`MailEditor` 字段）保存时校验语法（标签闭合、条件表达式），不通过返回 400。
 
 #### 联系人
 
@@ -452,7 +452,7 @@ templates/
 <!-- description -->
 自动回复规则「客服邮箱自动回复」在使用
 <!-- html -->
-<p>您好 {{mail.from[0].name}}，</p>
+<p>您好 {{ mail.from.first.name }}，</p>
 <p>我们已收到您的来信，将在 1 个工作日内回复。</p>
 ```
 

@@ -23,7 +23,7 @@ const templateBody = (required = []) => ({
     categoryId: { type: ['string', 'null'], description: '分类 ID，为空表示未分类' },
     name: { type: 'string', description: '模版名称' },
     subject: { type: 'string', description: '邮件主题，支持 {{mail.subject}} 等变量' },
-    html: { type: 'string', description: '富文本正文，支持 {{mail.from[0].name}}、{{account.name}} 等变量' },
+    html: { type: 'string', description: '富文本正文（Liquid），支持 {{ mail.from.first.name }}、{{ account.name }} 等变量与 {% if %} 条件' },
     description: { type: 'string', description: '模版说明' },
     status: { type: 'string', enum: ['enabled', 'disabled'], description: '状态' },
     sort: { type: 'integer', description: '排序' }

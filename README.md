@@ -103,7 +103,7 @@ npm i --save @kne/fastify-mail-gateway
 
 > **关键设计**：自动回复和转发发出的邮件带 `Auto-Submitted` 头且不再触发发信规则；自动回复会跳过自动生成邮件、邮件列表、群发和 no-reply 发件人，避免邮件循环。
 
-> **关键设计**：自动回复模板只做 `{{path}}` 变量替换（只读取自有属性），不执行表达式，规则配置不会带来代码执行风险。
+> **关键设计**：模版基于 Liquid 子集（`@kne/message-template`），只支持 `{{ path }}` 变量与 `{% if %}` 条件，只读取数据自有属性、不执行任意代码，规则配置不会带来代码执行风险；保存时校验语法。
 
 ##### 系统默认与自定义模版
 
@@ -127,7 +127,7 @@ npm i --save @kne/fastify-mail-gateway
 | 草稿 | 保存、更新、发送草稿，发送后草稿转为已发送 |
 | 回复链 | 回复时自动维护 `In-Reply-To` 与 `References` |
 | 规则中间件 | 条件 + 动作，支持试运行（只判断是否命中，不执行动作）和执行日志 |
-| 邮件模版 | 分类管理富文本模版，支持变量渲染、预览、复制、启停；系统默认模版启动时从目录载入；写信时一键套用，自动回复可直接引用模版 |
+| 邮件模版 | 分类管理富文本模版，支持 Liquid 变量与条件、预览、复制、启停；系统默认模版启动时从目录载入；写信时一键套用，自动回复可直接引用模版 |
 | 联系人 | 维护常用收发件人，地址去重，供写信和规则地址输入框选择 |
 | 扩展 | 宿主注册自定义动作、扩展条件（前端自动渲染参数表单），以及 `onReceive` / `beforeSend` / `afterSend` 钩子 |
 
@@ -441,7 +441,7 @@ register('notifyIm', {
 | `DELETE /templates/{id}` | 删除模版；系统默认模版返回 403（可停用） |
 | `POST /templates/{id}/status` | 启停（系统默认模版也可启停）；停用后规则中引用该模版的自动回复会失败并记入日志 |
 | `POST /templates/{id}/copy` | 复制为停用状态的自定义副本；需要改系统默认模版时复制后修改副本 |
-| `POST /templates/render` | 渲染模版，返回 `{ subject, html }` |
+| `POST /templates/render` | 渲染模版，返回 `{ subject, html }`；语法错误返回 400 |
 
 渲染请求体：
 
@@ -453,7 +453,7 @@ register('notifyIm', {
 | accountId | string | 否 | 邮件所属邮箱 | 提供 `account` 变量 |
 | data | object | 否 | `{}` | 额外变量，如 `{{name}}` |
 
-模版变量写法为 `{{path}}`，如 `{{mail.subject}}`、`{{mail.from[0].name}}`、`{{account.name}}`；只做取值替换不执行表达式，正文中的变量值会做 HTML 转义，缺失变量替换为空。
+模版基于 Liquid 子集（[@kne/message-template](https://www.npmjs.com/package/@kne/message-template)）：变量写法为 `{{ path }}`，如 `{{ mail.subject }}`、`{{ mail.from.first.name }}`、`{{ account.name }}`（旧写法 `{{mail.from[0].name}}` 仍兼容）；条件写法为 `{% if mail.attachments.size > 0 %}…{% else %}…{% endif %}`。只读取数据自有属性，正文中的变量值会做 HTML 转义，缺失变量输出为空。模版新建、修改及规则动作中的模版参数（`MailTemplateText`、`MailEditor` 字段）保存时校验语法（标签闭合、条件表达式），不通过返回 400。
 
 ##### 联系人
 
@@ -660,7 +660,7 @@ templates/
 <!-- description -->
 自动回复规则「客服邮箱自动回复」在使用
 <!-- html -->
-<p>您好 {{mail.from[0].name}}，</p>
+<p>您好 {{ mail.from.first.name }}，</p>
 <p>我们已收到您的来信，将在 1 个工作日内回复。</p>
 ```
 
