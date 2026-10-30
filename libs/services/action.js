@@ -2,6 +2,10 @@ const fp = require('fastify-plugin');
 const { createError } = require('../utils/error');
 const { createFormSchema, normalizeFormSchema, collectFields, isRequiredField, getPathValue } = require('../utils/form-schema');
 const { DIRECTIONS, DEFAULT_DIRECTIONS } = require('../utils/direction');
+const { validateTemplate } = require('../utils/template');
+
+// 这些字段类型的值按 Liquid 模版渲染
+const TEMPLATE_FIELD_TYPES = ['MailTemplateText', 'MailEditor'];
 
 module.exports = fp(async (fastify, options) => {
   const { models, services } = fastify[options.name];
@@ -68,6 +72,15 @@ module.exports = fp(async (fastify, options) => {
         throw createError(`动作「${action.label}」缺少参数「${field.label || field.name}」`);
       }
     });
+    action.fields
+      .filter(field => TEMPLATE_FIELD_TYPES.includes(field.type))
+      .forEach(field => {
+        const value = getPathValue(params, field.path);
+        const error = typeof value === 'string' && value ? validateTemplate(value) : null;
+        if (error) {
+          throw createError(`动作「${action.label}」参数「${field.label || field.name}」模版语法错误：${error}`);
+        }
+      });
     if (action.validate) {
       try {
         action.validate(params);

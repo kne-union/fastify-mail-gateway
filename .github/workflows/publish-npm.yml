@@ -11,3 +11,4 @@ jobs:
     secrets: inherit
     with:
       package_name: '@kne/fastify-mail-gateway'
+      run_test: true

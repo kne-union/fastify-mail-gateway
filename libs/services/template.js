@@ -3,7 +3,19 @@ const fs = require('node:fs/promises');
 const path = require('node:path');
 const { createError } = require('../utils/error');
 const { ownedOrSystem, isSystemLevel, sameUser } = require('../utils/owner');
-const { renderTemplate, parseTemplateFile } = require('../utils/template');
+const { renderTemplate, validateTemplate, parseTemplateFile } = require('../utils/template');
+
+const assertTemplateSyntax = ({ subject, html }) => {
+  [
+    ['邮件主题', subject],
+    ['正文', html]
+  ].forEach(([label, value]) => {
+    const error = value == null ? null : validateTemplate(value);
+    if (error) {
+      throw createError(`${label}模版语法错误：${error}`, 400);
+    }
+  });
+};
 
 const requireUser = userId => {
   if (userId == null || userId === '') {
@@ -153,6 +165,7 @@ module.exports = fp(async (fastify, options) => {
 
   const create = async ({ categoryId, name, subject, html, description, status, sort, userId }) => {
     const ownerId = requireUser(userId);
+    assertTemplateSyntax({ subject, html });
     await checkCategory(categoryId, ownerId);
     return await models.template.create({
       categoryId: categoryId || null,
@@ -170,6 +183,7 @@ module.exports = fp(async (fastify, options) => {
   const save = async ({ id, userId, ...data }) => {
     const template = await detail({ id, userId });
     assertCustom(template, '系统默认模版不可修改，可复制后修改副本');
+    assertTemplateSyntax(data);
     if (data.categoryId !== undefined) {
       await checkCategory(data.categoryId, userId);
       template.categoryId = data.categoryId || null;
@@ -235,6 +249,10 @@ module.exports = fp(async (fastify, options) => {
   const upsertSystemTemplate = async ({ file, categoryId, sort }) => {
     const { code, name } = parseCodeName(path.basename(file, path.extname(file)));
     const { subject, html, description } = parseTemplateFile(await fs.readFile(file, 'utf8'));
+    const syntaxError = validateTemplate(subject) || validateTemplate(html);
+    if (syntaxError) {
+      fastify.log.warn(`[fastify-mail-gateway] template ${code} syntax error: ${syntaxError}`);
+    }
     const data = { name, subject, html, description, categoryId };
     const template = await models.template.findOne({ where: { code, level: LEVEL_SYSTEM, userId: null } });
     if (template) {
@@ -290,8 +308,8 @@ module.exports = fp(async (fastify, options) => {
   };
 
   /**
-   * 渲染模版：mailId 提供 mail 变量（回复场景），accountId 提供 account 变量，data 为额外变量
-   * 返回 { subject, html }；变量值在 html 中会被转义
+   * 渲染模版（Liquid）：mailId 提供 mail 变量（回复场景），accountId 提供 account 变量，data 为额外变量
+   * 返回 { subject, html }；变量值在 html 中会被转义；语法错误返回 400
    */
   const render = async ({ id, template: inlineTemplate, mailId, accountId, data = {}, userId }) => {
     const ownerId = requireUser(userId);
@@ -305,6 +323,7 @@ module.exports = fp(async (fastify, options) => {
     if (targetAccountId) {
       context.account = (await services.account.detail({ id: targetAccountId, userId: ownerId })).get({ plain: true });
     }
+    assertTemplateSyntax(target);
     return {
       subject: renderTemplate(target.subject, context),
       html: renderTemplate(target.html, context, { html: true })

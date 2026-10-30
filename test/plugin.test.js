@@ -1246,6 +1246,36 @@ describe('@kne/fastify-mail-gateway', function () {
       const preview = await inject('POST', '/templates/render', { template: { subject: '{{account.address}}', html: '<b>{{missing}}</b>' }, accountId: account.id });
       expect(preview).to.deep.equal({ subject: 'bot@test.local', html: '<b></b>' });
     });
+
+    it('should render liquid conditions and reject invalid template syntax', async () => {
+      const preview = await inject('POST', '/templates/render', {
+        template: { subject: '{% if vip %}【VIP】{% endif %}{{ title }}', html: '<p>{% if vip %}尊敬的{% else %}您好{% endif %}</p>' },
+        data: { vip: true, title: '通知' }
+      });
+      expect(preview).to.deep.equal({ subject: '【VIP】通知', html: '<p>尊敬的</p>' });
+
+      const expectSyntaxError = async (promise, keyword) => {
+        try {
+          await promise;
+          expect.fail('should reject invalid template syntax');
+        } catch (e) {
+          expect(e.statusCode).to.equal(400);
+          expect(e.message).to.include(keyword);
+        }
+      };
+      await expectSyntaxError(inject('POST', '/templates', { name: '坏模版', html: '<p>{% if vip %}未闭合</p>' }), '正文模版语法错误');
+      const template = await inject('POST', '/templates', { name: '好模版', html: '<p>ok</p>' });
+      await expectSyntaxError(inject('PUT', `/templates/${template.id}`, { subject: '{% if a %}' }), '邮件主题模版语法错误');
+      await expectSyntaxError(inject('POST', '/templates/render', { template: { html: '{% if a %}' } }), '模版语法错误');
+      await expectSyntaxError(
+        inject('POST', '/rules', {
+          name: '坏前缀',
+          direction: 'beforeSend',
+          actions: [{ type: 'modifySubject', params: { prefix: '{% if a %}[外部]' } }]
+        }),
+        '模版语法错误'
+      );
+    });
   });
 
   describe('系统默认模版', () => {

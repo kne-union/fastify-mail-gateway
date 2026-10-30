@@ -1,22 +1,21 @@
-const escape = require('lodash/escape');
-const toPath = require('lodash/toPath');
-
-const getOwn = (data, path) => {
-  return toPath(path).reduce((current, key) => (current != null && Object.prototype.hasOwnProperty.call(current, key) ? current[key] : undefined), data);
-};
+const { renderTemplate: renderLiquid, validateTemplateHtml } = require('@kne/message-template');
 
 /**
- * 只做 {{path}} 变量替换（只读取自有属性），不执行任何表达式，避免规则配置带来代码执行风险
+ * Liquid 子集渲染（@kne/message-template）：{{ path }} 变量、{% if %} 条件；html 模式下变量值转义
  */
 const renderTemplate = (template, data, { html = false } = {}) => {
-  return String(template || '').replace(/{{\s*([\w.[\]]+)\s*}}/g, (match, path) => {
-    const value = getOwn(data, path);
-    if (value == null) {
-      return '';
-    }
-    const text = typeof value === 'object' ? JSON.stringify(value) : String(value);
-    return html ? escape(text) : text;
-  });
+  return renderLiquid(String(template || ''), data || {}, html ? {} : { type: 'text' });
+};
+
+// 旧模版的 {{mail.from[0].name}} 渲染没问题，但校验只认点号路径，校验时按等价的 .first 处理
+const normalizeFirstIndex = template => String(template || '').replace(/({{[\s\S]*?}}|{%[\s\S]*?%})/g, tag => tag.replace(/\[0\]/g, '.first'));
+
+/**
+ * 校验模版语法（标签闭合、条件表达式），不通过时返回错误信息
+ */
+const validateTemplate = template => {
+  const { ok, error } = validateTemplateHtml(normalizeFirstIndex(template));
+  return ok ? null : error;
 };
 
 /**
@@ -35,4 +34,4 @@ const parseTemplateFile = text => {
   return { subject: result.subject || '', html: result.html || '', description: result.description || null };
 };
 
-module.exports = { renderTemplate, parseTemplateFile };
+module.exports = { renderTemplate, validateTemplate, parseTemplateFile };
